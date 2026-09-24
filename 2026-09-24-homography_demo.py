@@ -43,7 +43,6 @@ import pygame
 
 HERE = Path(__file__).resolve().parent
 IMG_FILENAME = HERE / 'assets' / 'CS478_Poster_Warped.png'
-POSTER_FILENAME = HERE / 'assets' / 'CS478_Poster.png'  # unwarped, sets pane shape
 DATA_FILENAME = HERE / 'assets' / 'CS478_Poster_Warped_corners.txt'
 
 PAD = 50           # minimum margin around each image, so corners can sit off it
@@ -53,6 +52,7 @@ CENTER_W = 370     # width of the middle column (H and its controls)
 TEXT_H = 96        # coordinate readout under each pane
 HANDLE_R = 8       # corner handle radius (pixels)
 DECIMALS = 4       # H is floored to this many decimals for display
+POSTER_ASPECT = 1545 / 2000  # width / height of the true, unwarped poster
 
 BG = (248, 250, 252)          # #f8fafc
 FG = (15, 23, 42)             # #0f172a
@@ -297,10 +297,7 @@ def main():
 
     # Panes have the aspect ratio of the true, unwarped poster, and are just
     # big enough to hold the source image with at least PAD on every side.
-    poster = cv2.imread(str(POSTER_FILENAME), cv2.IMREAD_GRAYSCALE)
-    if poster is None:
-        raise SystemExit(f'Could not read {POSTER_FILENAME}')
-    aspect = poster.shape[1] / poster.shape[0]   # width / height
+    aspect = POSTER_ASPECT
     pane_h = src_h + 2 * PAD
     pane_w = round(pane_h * aspect)
     if pane_w < src_w + 2 * PAD:
