@@ -1,0 +1,5 @@
+# x y (pixels) of poster corners in CS478_Poster_Warped.png (360x500); order: TL, TR, BR, BL
+54.00 40.00
+324.00 0.00
+360.00 500.00
+18.00 450.00
