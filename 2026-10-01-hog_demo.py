@@ -203,7 +203,7 @@ class App:
 
     def update_reference(self):
         try:
-            self.ref = L.reference_descriptor(self.scenes[0], self.cfg, self.hd, self.upright)
+            self.ref = L.Template(self.scenes[0], self.cfg, self.hd, self.upright)
             self.ref_err = None
         except Exception as e:
             self.ref, self.ref_err = None, self.error_text(e)
@@ -241,8 +241,7 @@ class App:
     def score_fn(self, scorer):
         if scorer == 'svm':
             return self.svm['model'].decision_function
-        ref = self.ref
-        return lambda f: np.asarray(f) @ ref
+        return self.ref.score
 
     # ------------------------------------------------------------ background jobs
 
@@ -312,7 +311,7 @@ class App:
             return
         scene, st, cfg, hd, scorer = self.scene, self.st, self.cfg, self.hd, self.scorer
         score_fn, thr = self.score_fn(scorer), self.threshold(scorer)
-        span = 0.25 if scorer == 'template' else 2.5      # fade in below the threshold
+        span = 0.3 if scorer == 'template' else 2.5       # fade in below the threshold
 
         def fn():
             centers, feats = L.dense_windows(scene.image, cfg, hd, 4)
@@ -635,7 +634,8 @@ class App:
             self.draw_hog(pygame.Rect(x + half + 8, y2 + 18, half, 140), np.clip(-wt, 0, None), self.cfg)
             if self.live is not None:
                 s = float(self.svm['model'].decision_function(self.live[None])[0])
-                self.meter(y2 + 170, f'SVM score {s:+.2f}', (s + 3) / 6, s > self.threshold('svm'))
+                thr = self.threshold('svm')
+                self.meter(y2 + 170, f'SVM score {s:+.2f}', (s + 3) / 6, s > thr, s > thr - 1)
         else:
             n3 = len(self.scenes[0].threes)
             how = 'upright' if self.upright else 'as found'
@@ -644,15 +644,15 @@ class App:
             if self.ref is None:
                 self.wrap(self.ref_err or '', ref, color=WARN)
             else:
-                self.draw_hog(ref, self.ref, self.cfg)
+                self.draw_hog(ref, self.ref.ref, self.cfg)
                 if self.live is not None:
-                    s = float(self.live @ self.ref)
-                    self.meter(y2 + 170, f'Match {100 * s:.0f}%  (cosine similarity)', s,
-                               s > self.threshold('template'))
+                    s, thr = float(self.ref.score(self.live)), self.threshold('template')
+                    self.meter(y2 + 170, f'Match {s:+.2f}  (beyond the average digit)', (s + 0.2) / 0.8,
+                               s > thr, s > thr - 0.15)
 
-    def meter(self, y, label, frac, hit):
+    def meter(self, y, label, frac, hit, close):
         x, w = SIDE_X, SIDE_W
-        color = GOOD if hit else (AMBER if frac > 0.5 else WARN)
+        color = GOOD if hit else (AMBER if close else WARN)
         self.text(label, (x, y), self.bold, color)
         bar = pygame.Rect(x, y + 22, w, 12)
         pygame.draw.rect(self.screen, TRACK, bar, border_radius=6)

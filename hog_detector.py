@@ -95,7 +95,7 @@ class DetectConfig:
     angles: tuple = (-20, 0, 20)         # digit rotations to look for (rotation bank)
     stride: int = 4                      # window step in pixels
     nms_iou: float = 0.3
-    template_threshold: float = 0.8      # cosine similarity to the reference HoG
+    template_threshold: float = 0.4      # match to the reference HoG (hog_lib.Template)
     svm_threshold: float = 1.0           # SVM decision value
     svm_angles: tuple = (-5, 0, 5)       # rotations of the training 3s (augmentation)
 

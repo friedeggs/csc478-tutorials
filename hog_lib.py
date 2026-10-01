@@ -7,7 +7,7 @@ It holds everything around your TODOs in hog_detector.py:
     extract_patch, warp  image resampling (rotate / scale) for the probe and the pyramid
     patch_descriptor     HoG of one window, built from your E1-E3
     dense_windows        HoG of every window of an image at once (integral images)
-    reference_descriptor mean HoG of the 3s in the train scene
+    Template             reference HoG of the train 3s and the match score
     LinearSVM, sample_windows, evaluate
     self_test            the checks behind `python hog_detector.py` and the demo's E1-E6 chips
 
@@ -250,12 +250,32 @@ def digit_patch(scene_img, d, upright=True, angle_offset=0.0, zoom_factor=1.0, s
                          WINDOW + 2, angle, zoom)
 
 
-def reference_descriptor(scene, cfg, hd, upright=True):
-    """Unit-length mean HoG of the 3s in scene (the train scene)."""
-    feats = [patch_descriptor(digit_patch(scene.image, d, upright), cfg, hd)
-             for d in scene.threes]
-    m = np.mean(feats, axis=0)
-    return m / (np.linalg.norm(m) + 1e-12)
+class Template:
+    """The reference HoG of the train 3s, and how well a window matches it.
+
+    A HoG is all non-negative, so any patch with strokes has a fairly high plain
+    cosine similarity to any other: every digit looks ~60% like a 3. The match
+    therefore compares what is *specific* to a 3: subtract the average digit's
+    HoG, mu, from both the window x and the reference r, then take the cosine,
+
+        match(x) = (x - mu) . (r - mu) / (|x - mu| |r - mu|),   in [-1, 1].
+
+    r = mean HoG of the 3s, mu = mean HoG of all digits in the train scene,
+    upright=True de-rotates and rescales each digit first."""
+
+    def __init__(self, scene, cfg, hd, upright=True):
+        def mean(digits):
+            return np.mean([patch_descriptor(digit_patch(scene.image, d, upright), cfg, hd)
+                            for d in digits], axis=0)
+        self.ref = mean(scene.threes)          # the reference histogram the demo draws
+        self.mu = mean(scene.digits)
+        r = self.ref - self.mu
+        self.direction = r / (np.linalg.norm(r) + 1e-12)
+
+    def score(self, X):
+        """(N, D) descriptors -> (N,) match, or (D,) -> float."""
+        Z = np.asarray(X, float) - self.mu
+        return Z @ self.direction / (np.linalg.norm(Z, axis=-1) + 1e-12)
 
 
 # ---------------------------------------------------------------- classifier
