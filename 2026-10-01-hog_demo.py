@@ -14,7 +14,7 @@ of your TODOs E1-E6 in hog_detector.py.
 Keys
     Tab             next mode (or click the mode buttons)
     click / Space   Manual: "there is a 3 here"; Scan: run the scan; Train: train the SVM
-    wheel, Q / E    probe size, probe rotation (-/+ 5 degrees); 0 resets both
+    wheel, Q / E    probe size (41-55 px), rotation (-/+ 5 degrees up to +-30; hold to keep turning); 0 resets both
     1-5             HoG presets; B / C / U / O: bins, cells, signed, align
     A               reference from upright 3s or 3s as found
     G               bars or star glyphs
@@ -88,6 +88,7 @@ HINTS = {
 STATUS_STYLE = {'pass': ('ok', GOOD), 'answer': ('answer', ACCENT), 'todo': ('TODO', MUTED),
                 'needs': ('needs', AMBER), 'fail': ('FAIL', WARN)}
 LENS_CENTER, LENS_RADIUS = 175.5, 144.0     # in assets/magnifier.png (512 x 512)
+ROTATE_DELAY, ROTATE_SPEED = 0.3, 90.0      # holding Q / E: seconds before it repeats, deg / s
 
 
 def bin_color(cfg, b):
@@ -142,6 +143,7 @@ class App:
         self.preset_i, self.cfg = 0, L.PRESETS[0]
         self.upright, self.view = True, 'bars'
         self.probe_size, self.probe_angle = float(L.WINDOW), 0.0
+        self.held = {}                         # Q / E key -> time pressed
         self.scorer = 'template'
         self.thresholds = {}
         self.svm = None
@@ -440,10 +442,9 @@ class App:
         elif k == 'r':
             self.states[self.scene_i] = SceneState()
             self.say(f'Reset {self.scene.name}', FG)
-        elif k == 'q':
-            self.probe_angle -= 5
-        elif k == 'e':
-            self.probe_angle += 5
+        elif k in ('q', 'e'):
+            self.rotate_probe(5 if k == 'e' else -5)
+            self.held[key] = time.time()
         elif k == '0':
             self.probe_size, self.probe_angle = float(L.WINDOW), 0.0
         elif k == 'm':
@@ -479,6 +480,27 @@ class App:
             self.start_scan()
         else:
             self.start_train()
+
+    def rotate_probe(self, degrees):
+        """Rotate within the range the scene's digits are rotated by."""
+        self.probe_angle = float(np.clip(self.probe_angle + degrees, -hs.MAX_ANGLE, hs.MAX_ANGLE))
+
+    def resize_probe(self, steps):
+        """Resize by 2 px per wheel step, within the scene's digit scale range."""
+        lo, hi = (L.WINDOW * f for f in hs.SCALE_RANGE)
+        self.probe_size = float(np.clip(self.probe_size + 2 * steps, lo, hi))
+
+    def hold_rotate(self, dt):
+        """Keep rotating while Q or E is held down."""
+        pressed = pygame.key.get_pressed()
+        for key, sign in ((pygame.K_q, -1), (pygame.K_e, 1)):
+            start = self.held.get(key)
+            if start is None:
+                continue
+            if not pressed[key]:
+                del self.held[key]
+            elif time.time() - start > ROTATE_DELAY:
+                self.rotate_probe(sign * ROTATE_SPEED * dt)
 
     # ------------------------------------------------------------ live descriptor
 
@@ -776,6 +798,7 @@ class App:
     # ------------------------------------------------------------ main loop
 
     def run(self):
+        dt = 0.0
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
@@ -792,12 +815,13 @@ class App:
                         if pos is not None and self.mode == 'manual':
                             self.claim(pos)
                 elif event.type == pygame.MOUSEWHEEL:
-                    self.probe_size = float(np.clip(self.probe_size + 2 * event.y, 24, 96))
+                    self.resize_probe(event.y)
+            self.hold_rotate(dt)
             self.check_reload()
             self.poll_jobs()
             self.update_live()
             self.draw()
-            self.clock.tick(60)
+            dt = self.clock.tick(60) / 1000
 
 
 def main():
