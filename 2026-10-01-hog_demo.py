@@ -21,6 +21,7 @@ Keys
     M               Scan: score with the template or the SVM
     [ / ]           Scan: lower / raise the detection threshold
     H               Scan: score heatmap
+    W (hold)        peek: show the pixels under the probe while held (not the blind test)
     V               reveal the scene (not the blind test)
     T / N           next scene / new random test scene
     R               reset the found 3s and the scan of this scene
@@ -79,9 +80,9 @@ MONO = 'menlo,consolas,dejavusansmono,couriernew,monospace'
 MODES = ['manual', 'scan', 'train']
 MODE_NAMES = {'manual': 'Manual', 'scan': 'Scan', 'train': 'Train'}
 HINTS = {
-    'manual': 'click: a 3 is here  V: reveal  wheel Q E: probe size/angle  1-5 B C U O: HoG  '
+    'manual': 'click: a 3 is here  W: peek  V: reveal  wheel Q E: probe size/angle  1-5 B C U O: HoG  '
               'A: reference  G: glyphs  R: reset  Tab: mode',
-    'scan': 'Space: scan  M: template/SVM  [ ]: threshold  H: heatmap  V: reveal  T N: scene  '
+    'scan': 'Space: scan  M: template/SVM  [ ]: threshold  H: heatmap  W: peek  V: reveal  T N: scene  '
             '1-5: HoG  R: reset  Tab: mode',
     'train': 'Space: train the SVM on the train scene (DetectConfig.svm_angles)  1-5: HoG  Tab: mode',
 }
@@ -429,6 +430,9 @@ class App:
                      else 'as found, at their random angles'), ACCENT)
         elif k == 'g':
             self.view = 'glyphs' if self.view == 'bars' else 'bars'
+        elif k == 'w':
+            if not self.scene.revealable:
+                self.say('The blind test stays hidden, even under the magnifier.', AMBER)
         elif k == 'v':
             if self.scene.revealable:
                 self.st.revealed = not self.st.revealed
@@ -636,7 +640,7 @@ class App:
         self.text(f'{name}: {self.cfg.summary()}', (x, y + 40), self.small, FG, max_w=w)
 
         live = pygame.Rect(x, y + 60, w, 190)
-        if self.st.revealed and getattr(self, 'patch', None) is not None:
+        if (self.st.revealed or self.peeking()) and getattr(self, 'patch', None) is not None:
             self.thumbs(x, live.y, 58)                 # slide 48: patch, |gradient|, angle
             live = pygame.Rect(x + 66, live.y, w - 66, live.h)
         if self.mouse_image_pos() is None and self.live is None and not self.live_err:
@@ -687,9 +691,7 @@ class App:
         pane = pygame.Rect(IMG_X, IMG_Y, IMG_W, IMG_H)
         shown = st.revealed or (self.mode == 'train' and self.scene_i == 0 and self.svm is not None)
         if shown:
-            if getattr(scene, '_surf', None) is None:
-                scene._surf = gray_surface(scene.image)
-            scr.blit(scene._surf, pane)
+            scr.blit(self.scene_surface(), pane)
         else:
             pygame.draw.rect(scr, PANE_BG, pane)
             for gx in range(L.WINDOW, IMG_W, L.WINDOW):
@@ -728,6 +730,8 @@ class App:
             half = self.probe_size / 2
             corners = np.array([[-half, -half], [half, -half], [half, half], [-half, half]])
             pts = c + corners @ L.rot(self.probe_angle).T
+            if self.peeking() and not shown:
+                self.peek(pts, pane)
             pygame.draw.polygon(scr, ACCENT, pts.tolist(), 2)
             r_needed = half * math.sqrt(2) + 4
             size = int(512 * r_needed / LENS_RADIUS)
@@ -735,6 +739,31 @@ class App:
                 self.lens_cache[size] = pygame.transform.smoothscale(self.lens, (size, size))
             off = LENS_CENTER * size / 512
             scr.blit(self.lens_cache[size], (c[0] - off, c[1] - off))
+
+    def scene_surface(self):
+        scene = self.scene
+        if getattr(scene, '_surf', None) is None:
+            scene._surf = gray_surface(scene.image)
+        return scene._surf
+
+    def peeking(self):
+        """W held over the image of a scene that may be revealed."""
+        return (pygame.key.get_pressed()[pygame.K_w] and self.scene.revealable
+                and self.mouse_image_pos() is not None)
+
+    def peek(self, pts, pane):
+        """Draw the scene inside the probe square pts (screen coordinates) only."""
+        box = pygame.Rect(math.floor(pts[:, 0].min()), math.floor(pts[:, 1].min()), 0, 0)
+        box.size = (math.ceil(pts[:, 0].max()) - box.x + 1, math.ceil(pts[:, 1].max()) - box.y + 1)
+        box = box.clip(pane)
+        if box.w <= 0 or box.h <= 0:
+            return
+        sub = pygame.Surface(box.size, pygame.SRCALPHA)
+        sub.blit(self.scene_surface(), (0, 0), area=box.move(-IMG_X, -IMG_Y))
+        mask = pygame.Surface(box.size, pygame.SRCALPHA)
+        pygame.draw.polygon(mask, (255, 255, 255, 255), (pts - box.topleft).tolist())
+        sub.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        self.screen.blit(sub, box)
 
     def rect(self, b, color, width):
         pygame.draw.rect(self.screen, color, pygame.Rect(IMG_X + b[0], IMG_Y + b[1],

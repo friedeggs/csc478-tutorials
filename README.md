@@ -79,8 +79,8 @@ that says exactly what to return; `python hog_detector.py` checks it.
 1. **Manual** (after E1–E3): the scene starts hidden. Move the magnifier and compare the
    live HoG with the reference HoG of the training 3s; click where you think a 3 is. The mode
    bar counts the 3s left and your misses. Rotate and resize the magnifier (Q / E, mouse
-   wheel) and try other HoGs (keys 1–5, B C U O) to cope with rotated digits. V reveals the
-   train scene. The **blind test** scene is never revealed.
+   wheel) and try other HoGs (keys 1–5, B C U O) to cope with rotated digits. Hold W to peek
+   under the magnifier; V reveals the whole train scene. The **blind test** scene is never revealed.
 2. **Scan** (after E4–E6): Space runs your `detect`. Boxes are green when they hit a 3
    (IoU > 0.5) and red otherwise; the mode bar shows TP / FP / FN, precision, recall and AP.
    Edit `DetectConfig` (scales, angles, stride, thresholds) to experiment.
