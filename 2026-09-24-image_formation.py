@@ -3,6 +3,7 @@ import numpy as np
 from tqdm import tqdm
 
 from utils import bilinear_sample
+from answer_key import compute_homography
 
 np.random.seed(0)
 
@@ -12,14 +13,14 @@ TARGET_HEIGHT = 500
 TARGET_WIDTH = 360
 
 
-def compute_homography(src, tgt):
-    """src, tgt: (4, 2) arrays of (x, y). Returns H with tgt ~ H @ src."""
-    print("Source coordinates:")
-    print(src)
-    print("Target coordinates:")
-    print(tgt)
-    # TODO implement this
-    return np.eye(3)
+# def compute_homography(src, tgt):
+#     """src, tgt: (4, 2) arrays of (x, y). Returns H with tgt ~ H @ src."""
+#     print("Source coordinates:")
+#     print(src)
+#     print("Target coordinates:")
+#     print(tgt)
+#     # TODO implement this
+#     return np.eye(3)
 
 
 def inverse_warp(source_image, target_image, H):
@@ -149,5 +150,5 @@ def camera_scene():
     cv2.waitKey(0)
 
 if __name__ == "__main__":
-    homography_demo()
-    # camera_scene() # TODO uncomment this
+    # homography_demo()
+    camera_scene() # TODO uncomment this
