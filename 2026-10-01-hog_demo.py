@@ -82,7 +82,7 @@ MODE_NAMES = {'manual': 'Manual', 'scan': 'Scan', 'train': 'Train'}
 HINTS = {
     'manual': 'click: a 3 is here  W: peek  V: reveal  wheel Q E: probe size/angle  1-5 B C U O: HoG  '
               'A: reference  G: glyphs  R: reset  Tab: mode',
-    'scan': 'Space: scan  M: template/SVM  [ ]: threshold  H: heatmap  W: peek  V: reveal  T N: scene  '
+    'scan': 'Space: scan  M: template/SVM  [ ]: threshold  H: heatmap  W: peek  V: reveal  T: next scene  N: new scene  '
             '1-5: HoG  R: reset  Tab: mode',
     'train': 'Space: train the SVM on the train scene (DetectConfig.svm_angles)  1-5: HoG  Tab: mode',
 }
