@@ -103,3 +103,54 @@ replace it. `python 2026-10-01-hog_demo.py --no-answers` ignores released answer
 | `assets/hog_train.png`, `assets/hog_train_labels.json` | Train scene and its labels |
 | `assets/hog_test.bin` | Blind test scene (encoded) |
 | `assets/magnifier.png` | Magnifier icon |
+
+## Tutorial 5 — The Kalman Filter (`2026-10-08-kalman_demo.py`)
+
+Companion to Lecture 5, tracking part (slides 101–112: hidden state, the Bayes filter's predict /
+correct loop, the Kalman filter, constant velocity; slide 124: Mahalanobis gating).
+A car drives on a road, but you cannot see it: ten times a second a sensor reports its position
+with Gaussian noise. Fill in the Kalman filter, one step at a time, and watch what each step adds.
+
+### Run
+
+Same setup as above (this tutorial needs numpy, pygame and matplotlib), then:
+
+```bash
+python 2026-10-08-kalman_demo.py
+```
+
+### What to do
+
+Everything happens in the window; there is no code to write. The right pane shows the filter
+with blanks. Click a blank to pick a token (matrix cells: click to cycle, right-click to go back).
+A step runs as soon as all its blanks are filled, and each step you finish adds something to the
+world view. Press **C** with the mouse over a step (or click its chip) to check it.
+
+| Step | What you fill in | Slides | What appears |
+|---|---|---|---|
+| K1 | motion model `A` (constant velocity) | 112 | a 1 s look-ahead path |
+| K2 | predict: `μ⁻`, `Σ⁻` | 109, 111 | the red prediction ellipse; it drifts and grows |
+| K3 | observation model `H` | 110 | the sensor-noise ellipse `R` around each measurement |
+| K4 | innovation `r` and its covariance `S` | 124 | the innovation arrow, the `S` ellipse, the distance `d` |
+| K5 | correct: gain `K`, `μ`, `Σ` | 109, 111 | the green posterior; the filter runs |
+| K6 | gate (extension, scene 4) | 124 | outliers far outside `S` are ignored |
+
+Keys: **Space** play/pause · **→ / ←** half a step (predict, then correct) when paused · **V** reveal
+the true car · **Z** zoom · **1–4** scenes (highway, ring road, tunnel, busy street) · **R** restart ·
+**N** new seed · `[ ]` the filter's `σ_R` · `; '` the filter's `q` · `- =` the real sensor noise ·
+**L** lock `σ_R` to it · **X** time strip `p_x` / `p_y` · **Esc** quit.
+
+The mode bar shows how good the filter is without revealing the car: the estimate's RMSE against the
+raw measurements', how often the truth lies inside the 95 % ellipse (≈ 95 % if `Q` and `R` are right),
+and the mean normalised innovation `rᵀS⁻¹r` (NIS, ≈ 2 if `Q` and `R` are right).
+
+Answers are released step by step during the tutorial. After `git pull`, hover a step and press **A**
+to fill in its released answer.
+
+### Files
+
+| Path | What |
+|---|---|
+| `2026-10-08-kalman_demo.py` | The demo (pygame) |
+| `kf_lib.py` | Given code: roads and the car, the noisy sensor, the blanks and the filter they define, statistics |
+| `notes/05-tutorial.md` | Design plan for the tutorial |
