@@ -124,7 +124,9 @@ python 2026-10-08-kalman_demo.py
 Everything happens in the window; there is no code to write. The right pane shows the filter
 with blanks. Click a blank to pick a token (matrix cells: click to cycle, right-click to go back).
 A step runs as soon as all its blanks are filled, and each step you finish adds something to the
-world view. Press **C** with the mouse over a step (or click its chip) to check it.
+world view. A step turns green and its blanks pop as soon as they are all right; **C** (with the mouse over a step,
+or a click on its chip) tells you when they are not right yet. When your program puts `P` in place (within
+2 mm and 2°), the two clouds merge into one solid bunny; **R** or moving `P` brings the clouds back.
 
 | Step | What you fill in | Slides | What appears |
 |---|---|---|---|
@@ -154,3 +156,63 @@ to fill in its released answer.
 | `2026-10-08-kalman_demo.py` | The demo (pygame) |
 | `kf_lib.py` | Given code: roads and the car, the noisy sensor, the blanks and the filter they define, statistics |
 | `notes/05-tutorial.md` | Design plan for the tutorial |
+
+## Tutorial 6 — Iterative Closest Point (`2026-10-15-icp_demo.py`)
+
+Companion to Lecture 6, registration part (slides 96–109: the closed-form alignment with known
+pairs, then ICP with guessed pairs; slide 138 summarises the algorithm).
+Two scans of a bunny: move the magenta one (`P`) onto the blue one (`Q`). Build the algorithm on
+the right by dragging blocks, Scratch style, and watch each piece work in the 3D view on the left.
+
+### Run
+
+Same setup as above (this tutorial needs numpy, pygame and matplotlib), then:
+
+```bash
+python 2026-10-15-icp_demo.py
+```
+
+### What to do
+
+Everything happens in the window; there is no code to write.
+
+1. **Align tab (known pairs).** Drag variable tiles into the empty slots. A tile only fits a slot
+   of its shape: point clouds are pills, points are hexagons, 3×3 matrices are squares. A step runs
+   as soon as all its slots are filled, and its button switches on.
+2. **ICP tab (unknown pairs).** Only the loop itself is given: write how `E` starts, when the loop
+   repeats, and the four lines inside it, yourself, with word and symbol magnets (drop a magnet where it belongs in a line; drag it out or right-click it to
+   remove it). Under each line the demo says what it will do, or why it cannot run yet. `align`
+   means your Align script from tab 1.
+
+| Step | What you fill in | Slides | What it unlocks |
+|---|---|---|---|
+| I1 | centroids `μ_P`, `μ_Q` and the centred clouds `p′`, `q′` | 100 | the centroid crosses; **Translate** |
+| I2 | cross-covariance `W` | 102 | `W` and its singular values |
+| I3 | `R` from the SVD of `W` | 102–103 | **Rotate** |
+| I4 | translation `t` | 103 | **Align**: one click, from any start |
+| I5 | the ICP script: start of `E`, the loop condition, four lines | 107–109 | **Run**, **One pass**, **One line** |
+
+A step turns green and its blanks pop as soon as they are all right; **C** (with the mouse over a step,
+or a click on its chip) tells you when they are not right yet. When your program puts `P` in place (within
+2 mm and 2°), the two clouds merge into one solid bunny; **R** or moving `P` brings the clouds back.
+
+Viewer: drag to orbit, wheel to zoom, **Shift**+drag turns `P`, right-drag moves `P`.
+Keys: **Tab** switch tabs · **T / O / L** translate / rotate / align · **Space** run the loop ·
+**→** one pass · **.** one line · **1–4** scenes (known pairs, two scans, far start, two views) ·
+**R** reset `P` · **N** new samples · **G** random start turned by `θ₀` (`[ ]` change it) ·
+**V** show where `P` really belongs · **Esc** quit.
+
+The mode bar shows `E`, the error ICP can see, next to the true error, which only the demo knows.
+The two need not agree.
+
+Answers are released step by step during the tutorial. After `git pull`, hover a step and press **A**
+to fill in its released answer.
+
+### Files
+
+| Path | What |
+|---|---|
+| `2026-10-15-icp_demo.py` | The demo (pygame) |
+| `icp_lib.py` | Given code: scenes, the blocks and what they compute, checks |
+| `assets/icp_bunny.npz` | 8 000 points of the Stanford bunny (Stanford 3D Scanning Repository, graphics.stanford.edu/data/3Dscanrep) |
+| `notes/06-tutorial.md` | Design plan for the tutorial |
