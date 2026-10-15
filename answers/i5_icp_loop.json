@@ -1,0 +1,1 @@
+{"I5": {"loop": [["pair", "each", "p", "with", "closest", "q"], ["R", "comma", "t", "arrow", "align", "P", "to", "Q"], ["P", "arrow", "R", "P", "plus", "t"], ["E", "arrow", "mean", "norm", "q", "minus", "p", "norm2"]], "init": ["E", "arrow", "inf"], "cond": ["E", "decreased", "and", "E", "gt", "tau"]}}
