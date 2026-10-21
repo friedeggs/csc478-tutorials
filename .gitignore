@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+
+# Lecture slides and downloaded data
+lectures/
+data/
+
+# Answer keys. Release one answer during a tutorial with:  git add -f answers/e1_gradients.py
+answer_key*.py
+answers/
+assets/*answer_key*
+
+# Tutorial 7: the mesh the demo saves
+mug_mesh.obj

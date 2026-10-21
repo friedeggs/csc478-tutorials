@@ -216,3 +216,62 @@ to fill in its released answer.
 | `icp_lib.py` | Given code: scenes, the blocks and what they compute, checks |
 | `assets/icp_bunny.npz` | 8 000 points of the Stanford bunny (Stanford 3D Scanning Repository, graphics.stanford.edu/data/3Dscanrep) |
 | `notes/06-tutorial.md` | Design plan for the tutorial |
+
+## Tutorial 7 — Signed Distance Functions (`2026-10-22-sdf_demo.py`)
+
+Companion to Lecture 8, Volumetric Fusion part (slide 173: an SDF and its zero level set;
+slides 178–180: depth maps seen as distances; slides 189–191: marching cubes).
+Fit a torus to the depth maps of six cameras, build a coffee mug from simple shapes with CSG, fit
+the mug to the depth maps of a real one, and turn it back into a mesh with marching cubes.
+
+### Run
+
+Same setup as above (this tutorial needs numpy, pygame and torch), then:
+
+```bash
+python sdf_student.py
+```
+
+```bash
+python 2026-10-22-sdf_demo.py
+```
+
+The first command runs the self-tests of T1 and T2; the second opens the demo. Leave the demo
+running while you code: it reloads `sdf_student.py` every time you save it.
+
+### What to do
+
+| Tab | What you do | Slides | What you see |
+|---|---|---|---|
+| 1 Torus | **T1** `torus_sdf` and **T2** `fit` in `sdf_student.py`; then **F** | 173, 178 | your torus moving, turning and stretching onto the depth points (9 numbers: rotation, translation, 3 scales) |
+| 2 CSG | **C1–C3**: union, intersect, subtract from `min` / `max` magnets; **C4**: the mug from a body, a cavity and a handle | 174 | each operation on two spheres, then your mug; **X** cuts it open |
+| 3 Mug | place the start (sliders, **Shift**+drag turns, right-drag moves), tick pose / sizes, **F** | 173 | your `fit()` again, on your mug and the depth maps of `assets/mug.obj` |
+| 4 Mesh | **G** samples your mug on a grid, **E** runs marching cubes; draw each case it does not know yet | 189–191 | the march, slab by slab; at a missing case, the cell and every other cell that needs it |
+
+Drawing a case (tab 4): the cube on the right shows the cell's corners (red inside, green outside)
+and an orange ring on every edge the surface crosses. Press on a ring, drag through a second, release
+on a third to make a triangle (or click three rings). Right-click a triangle to delete it. Once every
+inside corner is cut off from every outside corner, the case turns green, fills all its symmetric
+sign patterns, and the march goes on. **Skip** leaves a case out, so you can see the holes it makes.
+
+A fit succeeds when your surface is within 1 mm of the depth points on average: the points snap
+onto it and it turns violet. A finished, watertight mesh is saved as `mug_mesh.obj`.
+
+Viewer: drag to orbit, wheel to zoom, **C** resets the camera.
+Keys: **1–4** tabs · **F** fit · **Space** pause a fit or the march · **Esc** stop a fit ·
+**R** reset (tabs 1, 3) / clear the mesh (tab 4) · **H** turn the mug half way round · **X** cut-away ·
+**G / E** sample / extract · **I** vertices at edge midpoints or interpolated · **A** released answer ·
+**Backspace / Delete** remove a magnet or triangle / a whole row or cube.
+
+Answers are released during the tutorial. After `git pull`, T1 and T2 use the released answer while
+they are still TODOs (their chips say so); in tabs 2 and 4, hover a row or open the cube and press **A**.
+
+### Files
+
+| Path | What |
+|---|---|
+| `2026-10-22-sdf_demo.py` | The demo (pygame) |
+| `sdf_student.py` | **Your code**: T1 `torus_sdf` and T2 `fit` |
+| `sdf_lib.py` | Given code: cameras and depth maps, the pose-and-scale wrapper, sphere tracing, CSG magnets, the mug, marching cubes and its checks |
+| `assets/mug.obj` | The mug to fit (23 k triangles, cm), made by `notes/07-make-assets.py` |
+| `notes/07-tutorial.md` | Design plan for the tutorial |
