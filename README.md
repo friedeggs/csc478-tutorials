@@ -251,8 +251,10 @@ running while you code: it reloads `sdf_student.py` every time you save it.
 Drawing a case (tab 4): the cube on the right shows the cell's corners (red inside, green outside)
 and an orange ring on every edge the surface crosses. Press on a ring, drag through a second, release
 on a third to make a triangle (or click three rings). Right-click a triangle to delete it. Once every
-inside corner is cut off from every outside corner, the case turns green, fills all its symmetric
-sign patterns, and the march goes on. **Skip** leaves a case out, so you can see the holes it makes.
+inside corner is cut off from every outside corner, the case turns green and fills all its symmetric
+sign patterns; the cube stays on it until **Continue** (**E** or **Space**) marches on. Click a ✓ case
+in the list to open your drawing again and change it (the wheel zooms the cube). **Skip** leaves a case
+out, so you can see the holes it makes.
 
 A fit succeeds when your surface is within 1 mm of the depth points on average: the points snap
 onto it and it turns violet. A finished, watertight mesh is saved as `mug_mesh.obj`.

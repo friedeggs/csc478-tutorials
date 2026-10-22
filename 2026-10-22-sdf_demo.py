@@ -12,7 +12,8 @@ Tab 3, Mug: your fit() again, now on your mug: 7 sizes and a pose, fitted to
 Tab 4, Mesh (slides 189-191): sample your mug's SDF on a grid and run marching
     cubes. When it meets a sign pattern it has no triangles for, it stops: draw
     them in the cube on the right (press on a point, drag through a second,
-    release on a third).
+    release on a third). Once they are right the cube stays on that case
+    until you continue (E); click a drawn case in the list to open it again.
 
 Viewer
     left-drag           orbit the camera            wheel   zoom
@@ -24,7 +25,7 @@ Keys
     R               reset to the start (tabs 1, 3) / clear the mesh (tab 4)
     H               tab 3: turn the mug half way round
     X               cut-away view (tabs 2, 3)
-    G / E           tab 4: sample the grid / extract the mesh
+    G / E           tab 4: sample the grid / extract the mesh (E also continues after a case is drawn)
     I               tab 4: vertices at edge midpoints / interpolated (slide 189)
     C               reset the camera
     A               fill the released answer for the step under the mouse
@@ -215,12 +216,16 @@ class App:
         self.h = 0.4
         self.grid = None
         self.march = None
-        self.march_state = 'idle'             # idle / running / paused / stuck / done
+        self.march_state = 'idle'             # idle / sampled / running / paused / stuck / solved / done
         self.march_t = 0.0
         self.table = L.given_table()
         self.drawn = {}                       # class -> (cfg, triangles) drawn by the student
         self.skipped = set()
-        self.cube_tris = []                   # the editor's triangles for the stuck cell
+        self.edit_cfg = None                  # the sign pattern open in the cube editor
+        self.edit_ok = False                  # its triangles are right
+        self.partial = {}                     # unfinished drawings of patterns not open right now
+        self.cube_zoom = 1.0
+        self.cube_tris = []                   # the editor's triangles
         self.cube_path = []                   # edges picked so far in a press-drag-release
         self.cube_click = False
         self.cube_view = [-35.0, 22.0]
@@ -655,8 +660,12 @@ class App:
             self.success.pop('mug', None)
 
     def zoom(self, closer):
-        c = self.cams[self.tab]
-        c[2] = max(8.0, min(80.0, c[2] / 1.1 if closer else c[2] * 1.1))
+        if self.tab == 'mesh' and self.focus is not None:     # close up on a stuck cell
+            c, d = self.focus
+            self.focus = (c, max(2.0, min(80.0, d / 1.1 if closer else d * 1.1)))
+        else:
+            c = self.cams[self.tab]
+            c[2] = max(8.0, min(80.0, c[2] / 1.1 if closer else c[2] * 1.1))
         self.moved()
 
     def moved(self):
@@ -971,7 +980,7 @@ class App:
             self.grid = L.Grid(self.mug_model, lo, hi, self.h)
         self.march, self.march_state, self.focus = None, 'sampled', None
         self.success.pop('mesh', None)
-        self.cube_tris, self.cube_path = [], []
+        self.close_case()
         g = self.grid
         crossing = int((g.cls > 0).sum())
         self.say(f'sampled your mug at {np.prod(g.n + 1):,} grid points ({self.h * 10:g} mm apart): '
@@ -982,7 +991,7 @@ class App:
         self.march, self.focus = None, None
         self.march_state = 'sampled' if self.grid is not None else 'idle'
         self.success.pop('mesh', None)
-        self.cube_tris, self.cube_path = [], []
+        self.close_case()
         for k in list(self.skipped):
             self.unskip(k)
         self.say('mesh cleared · E extracts again (the classes you drew stay drawn)', MUTED)
@@ -992,6 +1001,9 @@ class App:
             self.sample_grid()
             if self.grid is None:
                 return
+        if self.march_state == 'solved':
+            self.continue_march()
+            return
         if self.march is not None and self.march_state in ('running', 'stuck'):
             return
         if self.march is None or self.march_state == 'done':
@@ -1008,6 +1020,8 @@ class App:
             self.say('march paused · Space resumes', MUTED)
         elif self.march_state == 'paused':
             self.march_state = 'running'
+        elif self.march_state == 'solved':
+            self.continue_march()
         elif self.march_state in ('sampled', 'idle', 'done'):
             self.extract()
 
@@ -1020,8 +1034,7 @@ class App:
             self.march_state = 'stuck'
             cfg = self.stuck_cfg()
             k = L.CLASS_OF[cfg]
-            self.cube_tris, self.cube_path, self.cube_bad = [], [], ()
-            self.cube_msg = ('press on a crossing point, drag through a second, release on a third', MUTED)
+            self.open_case(cfg)
             self.say(f'stuck at case {k} ({L.CLASS_INFO[k]}): no triangles for it yet · draw them in the cube', AMBER)
             i, j, kk = self.march.stuck
             c = self.grid.X[i, j, kk] + self.grid.h / 2
@@ -1032,6 +1045,54 @@ class App:
     def stuck_cfg(self):
         i, j, k = self.march.stuck
         return int(self.grid.cfg[i, j, k])
+
+    def continue_march(self):
+        """After a case is right: march on (the editor closes until the next missing case)."""
+        if self.march_state != 'solved':
+            return
+        self.close_case()
+        self.march_state, self.march_t, self.focus = 'running', time.time(), None
+        self.say('marching on', MUTED)
+
+    # which sign pattern the cube editor shows
+
+    def open_case(self, cfg, tris=None):
+        """Show cfg in the cube editor, with tris or its unfinished drawing (kept per pattern)."""
+        if self.edit_cfg is not None and not self.edit_ok:
+            self.partial[self.edit_cfg] = list(self.cube_tris)
+        self.edit_cfg = cfg
+        self.cube_tris = list(tris) if tris is not None else self.partial.pop(cfg, [])
+        self.cube_path, self.cube_click, self.cube_bad = [], False, ()
+        ok, msg, _ = L.check_triangles(cfg, self.cube_tris) if self.cube_tris else (None, '', ())
+        self.edit_ok = ok is True
+        if self.edit_ok:
+            self.cube_msg = ('✓ right. Change it if you like: it is checked again after every change', GOOD)
+        elif self.cube_tris:
+            self.cube_msg = (msg, BAD if ok is False else MUTED)
+        else:
+            self.cube_msg = ('press on a crossing point, drag through a second, release on a third', MUTED)
+
+    def close_case(self):
+        if self.edit_cfg is not None and not self.edit_ok and self.cube_tris:
+            self.partial[self.edit_cfg] = list(self.cube_tris)
+        self.edit_cfg, self.edit_ok = None, False
+        self.cube_tris, self.cube_path, self.cube_click = [], [], False
+
+    def open_class(self, k):
+        """A click on a case in the list: open the stuck case, or one you have drawn, in the editor."""
+        if self.march_state == 'stuck' and L.CLASS_OF[self.stuck_cfg()] == k:
+            if self.edit_cfg != self.stuck_cfg():
+                self.open_case(self.stuck_cfg())
+            return
+        if k not in self.drawn:
+            what = 'given: the program has it already' if k in L.GIVEN_CLASSES or k == 0 else \
+                'not drawn yet: the march opens it when it meets it'
+            self.say(f'case {k} is {what}', MUTED)
+            return
+        src, tris = self.drawn[k]
+        cfg = src if L.CLASS_OF[src] == k else L.class_representative(k)
+        self.open_case(cfg, L.map_triangles(tris, src, cfg))
+        self.say(f'case {k}: your drawing · change it and it is checked again', MUTED)
 
     def finish_mesh(self):
         self.march_state, self.focus = 'done', None
@@ -1055,7 +1116,8 @@ class App:
         for cfg in range(256):
             if L.CLASS_OF[cfg] == k and cfg not in self.table:
                 self.table[cfg] = []
-        self.cube_tris, self.cube_path = [], []
+        self.partial.pop(self.stuck_cfg(), None)
+        self.close_case()
         self.march_state, self.march_t, self.focus = 'running', time.time(), None
         self.say(f'case {k} skipped: its cells stay empty, so the mesh will have holes there', AMBER)
 
@@ -1077,14 +1139,22 @@ class App:
         for c in classes:
             self.drawn[c] = (cfg, list(tris))
             self.pop(f'X{c}')
+        for c2 in list(self.partial):
+            if L.CLASS_OF[c2] in classes:
+                del self.partial[c2]
         extra = ' (and its mirror image, case 14)' if 11 in classes and k != 14 else \
             (' (and its mirror image, case 11)' if k == 14 else '')
+        then = ''
+        if self.march_state == 'stuck' and L.CLASS_OF[self.stuck_cfg()] in classes:
+            self.march_state = 'solved'
+            then = ' · Continue (E) marches on'
+        elif self.march is not None and self.march.tris:
+            then = ' · R then E extracts again with it'
         self.say(f'✓ case {k}{extra}: your {len(tris)} triangle{"s" if len(tris) > 1 else ""} fill '
-                 f'{n} of the 256 sign patterns · marching on', GOOD)
+                 f'{n} of the 256 sign patterns{then}', GOOD)
         self.cube_msg = ('✓ every inside corner is cut off from every outside corner', GOOD)
+        self.edit_ok = True
         self.pop('cube')
-        self.march_state, self.march_t = 'running', time.time() + 0.7
-        self.focus = None
 
     def mesh_note(self):
         if self.mug_model is None:
@@ -1120,7 +1190,7 @@ class App:
             return
         # signs at the grid points near the surface, above the slab the march has reached
         kmin = self.march.k if self.march is not None else 0
-        stuck = self.march_state == 'stuck'
+        stuck = self.march_state in ('stuck', 'solved')
         key = (id(g), kmin, stuck)
         if getattr(self, '_dots_key', None) != key:
             near = np.abs(g.F) < g.h * 0.9
@@ -1139,7 +1209,7 @@ class App:
             self.draw_triangles(mesh[0], mesh[1], cam)
         if self.march is not None and self.march_state in ('running', 'paused'):
             self.draw_slab(cam)
-        if self.march_state == 'stuck':
+        if self.march_state in ('stuck', 'solved'):
             self.draw_stuck(cam)
 
     def draw_triangles(self, V, F, cam, base=None):
@@ -1180,6 +1250,8 @@ class App:
         scr = self.screen
         cfg = self.stuck_cfg()
         k = L.CLASS_OF[cfg]
+        solved = self.march_state == 'solved'
+        hole = GOOD if solved else HOLE                # green: filled once the march goes on
         # every other cell of this case: an orange square (a hole in the mesh)
         holes = self.march.holes(k)
         if len(holes):
@@ -1189,19 +1261,20 @@ class App:
             for (x, y), zz in zip(uv[:600].tolist(), z[:600].tolist()):
                 if zz > 0.5:
                     s = max(4, min(10, int(cam.focal * self.grid.h / zz * 0.5)))
-                    pygame.draw.rect(over, (*HOLE, 110), (x - s // 2, y - s // 2, s, s))
-                    pygame.draw.rect(over, (*HOLE, 230), (x - s // 2, y - s // 2, s, s), 1)
+                    pygame.draw.rect(over, (*hole, 110), (x - s // 2, y - s // 2, s, s))
+                    pygame.draw.rect(over, (*hole, 230), (x - s // 2, y - s // 2, s, s), 1)
             scr.blit(over, (VX, VY))
         # the stuck cell: a pulsing wire cube with its corner signs
         Cw = self.cell_corners(self.march.stuck)
         uv, z = cam.project(Cw)
         uv = uv + [VX, VY]
         pulse = 0.5 + 0.5 * math.sin(time.time() * 6)
-        wc = tuple(int(HOLE[i] * (1 - 0.4 * pulse)) for i in range(3))
+        wc = tuple(int(hole[i] * (1 - 0.4 * pulse * (not solved))) for i in range(3))
         for a, b in L.EDGES:
             pygame.draw.line(scr, wc, uv[a], uv[b], 3)
         # the triangles drawn so far, in the viewer too
-        for t in self.cube_tris:
+        tris = self.cube_tris if self.edit_cfg == cfg else self.table.get(cfg) or self.partial.get(cfg, [])
+        for t in tris:
             P = [uv[list(L.EDGES[e])].mean(0) for e in t]
             pygame.draw.polygon(scr, lighter(SURF, 0.2), P)
             pygame.draw.polygon(scr, darker(SURF), P, 1)
@@ -1367,7 +1440,7 @@ class App:
         fwd = -np.array([cp * cy, cp * sy, sp])
         up = np.cross(right, fwd)
         P = L.CORNERS - 0.5
-        s = min(rect.w, rect.h) * 0.52
+        s = min(rect.w, rect.h) * 0.52 * self.cube_zoom
         cx, cy_ = rect.centerx, rect.centery + 6
         persp = 1 / (1 + 0.12 * (P @ fwd))
         corners = np.stack([cx + s * (P @ right) * persp, cy_ - s * (P @ up) * persp], 1)
@@ -1400,7 +1473,7 @@ class App:
         return None if best is None else best[1]
 
     def cube_add_edge(self, e):
-        cfg = self.stuck_cfg()
+        cfg = self.edit_cfg
         if e not in L.crossing_edges(cfg):
             self.cube_bad, self.cube_bad_t = (e,), time.time()
             self.cube_msg = ('both corners of this edge are on the same side: the surface does not cross it', BAD)
@@ -1421,13 +1494,16 @@ class App:
         self.cube_changed()
 
     def cube_changed(self):
-        if self.march_state != 'stuck':
+        cfg = self.edit_cfg
+        if cfg is None:
             return
-        cfg = self.stuck_cfg()
         ok, msg, bad = L.check_triangles(cfg, self.cube_tris)
         if ok is True:
             self.solve_case(cfg, list(self.cube_tris))
             return
+        self.edit_ok = False
+        if L.CLASS_OF[cfg] in self.drawn:
+            msg += ' (until it is right again, the march uses your last right drawing)'
         if ok is None:
             n = len(self.cube_tris)
             self.cube_msg = (f'{n} triangle{"s" if n != 1 else ""} · {msg}', MUTED)
@@ -1437,9 +1513,10 @@ class App:
             self.cube_bad, self.cube_bad_t = bad, time.time()
 
     def cube_answer(self):
-        if self.march_state != 'stuck':
+        cfg = self.edit_cfg
+        if cfg is None:
+            self.say('open a case first (a click on it in the list)', AMBER)
             return
-        cfg = self.stuck_cfg()
         k = L.CLASS_OF[cfg]
         tris = L.released_triangles(self.released.get('X'), k, cfg)
         if tris is None:
@@ -1450,6 +1527,10 @@ class App:
 
     def cube_mouse_down(self, ev):
         rect = self.hit['editor']
+        if ev.button in (4, 5):                        # wheel: zoom the cube
+            f = 1.1 if ev.button == 4 else 1 / 1.1
+            self.cube_zoom = max(0.6, min(1.5, self.cube_zoom * f))
+            return
         e = self.edge_at(ev.pos)
         if ev.button == 3:
             i = self.triangle_at(ev.pos)
@@ -1492,14 +1573,14 @@ class App:
             return
         d['pos'] = ev.pos
         e = self.edge_at(ev.pos, radius=10)
-        if e is not None and e not in self.cube_path and e in L.crossing_edges(self.stuck_cfg()):
+        if e is not None and e not in self.cube_path and e in L.crossing_edges(self.edit_cfg):
             self.cube_add_edge(e)
             if not self.cube_path:
                 self.drag = None
 
     def draw_editor(self, rect):
         scr = self.screen
-        cfg = self.stuck_cfg()
+        cfg = self.edit_cfg
         need = set(L.crossing_edges(cfg))
         used = {e for t in self.cube_tris for e in t}
         pygame.draw.rect(scr, (248, 250, 252), rect, border_radius=6)
@@ -1874,7 +1955,7 @@ class App:
             self.hit['buttons'].append((r, (lambda h=h: self.set_h(h))))
             x = r.right + 6
         y += 30
-        busy = self.march_state in ('running', 'paused', 'stuck')
+        busy = self.march_state in ('running', 'paused', 'stuck', 'solved')
         bx = self.button('Sample grid  G', self.sample_grid, x0, y, self.mug_model is not None and not busy)
         bx = self.button('Extract  E', self.extract, bx, y, self.grid is not None and not busy)
         self.button('Interpolated  I' if self.interpolate else 'Midpoints  I', self.toggle_interp, bx, y, True)
@@ -1883,6 +1964,8 @@ class App:
         y += 22
         counts = self.grid.class_counts() if self.grid is not None else {}
         stuck_k = L.CLASS_OF[self.stuck_cfg()] if self.march_state == 'stuck' else None
+        open_k = L.CLASS_OF[self.edit_cfg] if self.edit_cfg is not None else None
+        self.hit['cases'] = []
         cw, ch = 93, 36
         for i, k in enumerate(range(15)):
             cx, cy = x0 + (i % 5) * (cw + 4), y + (i // 5) * (ch + 4)
@@ -1902,6 +1985,9 @@ class App:
             pop = self.pop_scale(f'X{k}', 0)
             rr = r.inflate(int(10 * (pop - 1) / 0.32), int(10 * (pop - 1) / 0.32))
             pygame.draw.rect(scr, bg, rr, border_radius=5)
+            if k == open_k or (k in L.MIRROR_OF and L.MIRROR_OF[k] == open_k):
+                pygame.draw.rect(scr, ACCENT, rr.inflate(4, 4), 2, border_radius=7)
+            self.hit['cases'].append((r, k))
             scr.blit(self.bold.render(str(k), True, fg if k != stuck_k else WHITE), (r.x + 6, r.y + 3))
             scr.blit(self.small.render(state, True, fg), (r.x + 6, r.y + 19))
             if f'X{k}' in self.pops and f'X{k}' not in self.sparked:
@@ -1911,16 +1997,15 @@ class App:
                 c = self.small.render(f'{counts[k]}', True, darker(fg) if k != stuck_k else WHITE)
                 scr.blit(c, (r.right - c.get_width() - 5, r.y + 4))
         y += 3 * (ch + 4) + 2
-        scr.blit(self.small.render('the number in a case = its cells in this grid · 14 is 11 in a mirror', True, FAINT),
-                 (x0, y))
+        scr.blit(self.small.render('click a ✓ case to open it · number: its cells in this grid', True, FAINT), (x0, y))
         y += 22
-        if self.march_state == 'stuck':
+        if self.edit_cfg is not None:
             self.draw_stuck_panel(x0, y, right)
         else:
             self.draw_mesh_info(x0, y, right)
 
     def set_h(self, h):
-        if self.march_state in ('running', 'paused', 'stuck'):
+        if self.march_state in ('running', 'paused', 'stuck', 'solved'):
             self.say('clear the mesh first (R)', AMBER)
             return
         self.h = h
@@ -1935,24 +2020,33 @@ class App:
                  'vertices at the edge midpoints: the mesh gets blocky', MUTED)
 
     def draw_stuck_panel(self, x0, y, right):
+        """The cube editor for the open case, with what the case is and what to do."""
         scr = self.screen
-        cfg = self.stuck_cfg()
+        cfg = self.edit_cfg
         k = L.CLASS_OF[cfg]
+        stopped = self.march_state in ('stuck', 'solved')
+        is_stuck = stopped and cfg == self.stuck_cfg()
         rect = pygame.Rect(x0, y, 236, SBY + SBH - y - 10)
         self.hit['editor'] = rect
         self.draw_editor(rect)
         tx = rect.right + 12
         tw = right - tx
         ty = y + 2
-        scr.blit(self.big.render(f'case {k}', True, HOLE), (tx, ty))
+        scr.blit(self.big.render(f'case {k}' + (' ✓' if self.edit_ok else ''), True,
+                                 GOOD if self.edit_ok else HOLE), (tx, ty))
         ty += 24
         for line in self.wrap(L.CLASS_INFO[k] + (' inside' if bin(cfg).count('1') <= 4 else ' outside'), tw):
             scr.blit(self.small.render(line, True, FG), (tx, ty))
             ty += 15
-        n = len(self.march.holes(k))
         ty += 4
-        for line in self.wrap(f'{n} cell{"s" if n != 1 else ""} of this grid need{"s" if n == 1 else ""} it '
-                              f'(orange in the viewer)', tw):
+        if is_stuck:
+            n = len(self.march.holes(k))
+            where = 'green: filled when you continue' if self.edit_ok else 'orange in the viewer'
+            note = f'{n} cell{"s" if n != 1 else ""} of this grid need{"s" if n == 1 else ""} it ({where})'
+        else:
+            n = sum(1 for c in range(256) if L.CLASS_OF[c] == k)
+            note = f'one of the {n} sign patterns of case {k}'
+        for line in self.wrap(note, tw):
             scr.blit(self.small.render(line, True, MUTED), (tx, ty))
             ty += 15
         ty += 6
@@ -1967,10 +2061,22 @@ class App:
             scr.blit(self.small.render(line, True, col), (tx, ty))
             ty += 15
         by = rect.bottom - 70
-        self.button('Clear  Del', self.cube_clear, tx, by, bool(self.cube_tris))
-        self.button('Skip', self.skip_case, tx + 110, by, True)
-        if 'X' in self.released:
-            self.button('Answer  A', self.cube_answer, tx, by + 36, True)
+        bx = self.button('Clear  Del', self.cube_clear, tx, by, bool(self.cube_tris))
+        if self.march_state == 'solved':
+            self.button('Continue  E', self.continue_march, bx, by, True)
+        elif is_stuck:
+            self.button('Skip', self.skip_case, bx, by, True)
+        bx = tx
+        if 'X' in self.released and not self.edit_ok:
+            bx = self.button('Answer  A', self.cube_answer, bx, by + 36, True)
+        if stopped and not is_stuck:
+            self.button(f'Back to {L.CLASS_OF[self.stuck_cfg()]}', self.back_to_stuck, bx, by + 36, True)
+        elif not stopped:
+            self.button('Close', self.close_case, bx, by + 36, True)
+
+    def back_to_stuck(self):
+        self.open_case(self.stuck_cfg()) if self.march_state == 'stuck' else \
+            self.open_case(self.stuck_cfg(), self.table.get(self.stuck_cfg()))
 
     def cube_clear(self):
         self.cube_tris, self.cube_path = [], []
@@ -2016,10 +2122,10 @@ class App:
             col = ACCENT
         elif self.tab == 'mesh' and self.march is not None:
             state = {'running': 'marching', 'paused': 'paused', 'stuck': 'stuck: a case is missing',
-                     'done': 'done'}.get(self.march_state, '')
-            if self.march_state in ('running', 'paused', 'stuck'):
+                     'solved': '✓ case drawn · E continues', 'done': 'done'}.get(self.march_state, '')
+            if self.march_state in ('running', 'paused', 'stuck', 'solved'):
                 state += f' · slab {self.march.k + 1} / {self.grid.n[2]}'
-            col = HOLE if self.march_state == 'stuck' else (GOOD if self.march_state == 'done' else ACCENT)
+            col = HOLE if self.march_state == 'stuck' else (GOOD if self.march_state in ('done', 'solved') else ACCENT)
         if state:
             r = self.font.render(state, True, col)
             scr.blit(r, (VX + VW - r.get_width(), 10))
@@ -2113,8 +2219,8 @@ class App:
             crossing = int((self.grid.cls[:, :, k] > 0).sum())
             h = 6 + min(30, crossing / 12)
             col = GOOD if k < done or self.march_state == 'done' else TRACK
-            if self.march_state == 'stuck' and k == self.march.k:
-                col = HOLE
+            if self.march_state in ('stuck', 'solved') and k == self.march.k:
+                col = HOLE if self.march_state == 'stuck' else lighter(GOOD, 0.4)
             pygame.draw.rect(scr, col, (x0 + k * w + 1, y0 + 36 - h, max(1, w - 2), h))
         mesh = self.mesh_arrays()
         tris = 0 if mesh is None else len(mesh[1])
@@ -2189,9 +2295,14 @@ class App:
                 self.slider_drag = (name, rect.inflate(-10, -14))
                 self.set_slider(name, pos[0], self.slider_drag[1])
                 return
-        if self.tab == 'mesh' and self.hit.get('editor') is not None and self.hit['editor'].collidepoint(pos):
-            self.cube_mouse_down(ev)
-            return
+        if self.tab == 'mesh':
+            for rect, k in self.hit.get('cases', []):
+                if rect.collidepoint(pos) and ev.button == 1:
+                    self.open_class(k)
+                    return
+            if self.hit.get('editor') is not None and self.hit['editor'].collidepoint(pos):
+                self.cube_mouse_down(ev)
+                return
         if self.tab == 'csg':
             where = self.magnet_at(pos)
             if where is not None:
@@ -2290,7 +2401,7 @@ class App:
         elif k == pygame.K_c:
             self.reset_camera()
         elif k == pygame.K_g and self.tab == 'mesh':
-            if self.march_state in ('running', 'paused', 'stuck'):
+            if self.march_state in ('running', 'paused', 'stuck', 'solved'):
                 self.say('clear the mesh first (R)', AMBER)
             else:
                 self.sample_grid()
@@ -2308,7 +2419,7 @@ class App:
                 else:
                     self.fill_answer(key)
         elif k == pygame.K_BACKSPACE:
-            if self.tab == 'mesh' and self.march_state == 'stuck':
+            if self.tab == 'mesh' and self.edit_cfg is not None:
                 if self.cube_path:
                     self.cube_path.pop()
                 elif self.cube_tris:
@@ -2321,7 +2432,7 @@ class App:
                 elif key is not None and self.rows[key]:
                     self.take_magnet(key, len(self.rows[key]) - 1)
         elif k == pygame.K_DELETE:
-            if self.tab == 'mesh' and self.march_state == 'stuck':
+            if self.tab == 'mesh' and self.edit_cfg is not None:
                 self.cube_clear()
             elif self.tab == 'csg':
                 key = self.step_at(mouse)
