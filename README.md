@@ -42,6 +42,8 @@ Notes:
 
 ## Tutorial 3 — Image Formation and Homographies (`2026-09-24-image_formation.py`)
 
+[![Teaser](assets/warp.gif)](assets/warp.mov)
+
 Companion to Lecture 3 (slides 17–24: 2D transformations, homography estimation; slides 36–40:
 perspective projection with a pinhole camera). A photo of the course poster, taken at an angle:
 estimate the homography from its four corners, warp it back to a flat 360 × 500 poster, then paste
@@ -94,6 +96,8 @@ The answer is released: `2026-09-24-image_formation.py` imports `compute_homogra
 | `assets/CS478_Poster_Warped.png`, `assets/CS478_Poster_Warped_corners.txt` | The angled poster photo and its corners (TL, TR, BR, BL) |
 
 ## Tutorial 4 — HoG Object Detection (`2026-10-01-hog_demo.py`)
+
+[![Teaser](assets/hog.gif)](assets/hog.mov)
 
 Companion to Lecture 4 (slides 44–48: IoU, average precision, sliding windows, HoG).
 An "I spy" game: find every **3** among ~100 rotated, scaled, overlapping MNIST digits,
@@ -159,6 +163,8 @@ replace it. `python 2026-10-01-hog_demo.py --no-answers` ignores released answer
 
 ## Tutorial 5 — The Kalman Filter (`2026-10-08-kalman_demo.py`)
 
+[![Teaser](assets/ring_road.gif)](assets/ring_road.mov)
+
 Companion to Lecture 5, tracking part (slides 101–112: hidden state, the Bayes filter's predict /
 correct loop, the Kalman filter, constant velocity; slide 124: Mahalanobis gating).
 A car drives on a road, but you cannot see it: ten times a second a sensor reports its position
@@ -211,6 +217,8 @@ to fill in its released answer.
 | `notes/05-tutorial.md` | Design plan for the tutorial |
 
 ## Tutorial 6 — Iterative Closest Point (`2026-10-15-icp_demo.py`)
+
+[![Teaser](assets/bunny.gif)](assets/bunny.mov)
 
 Companion to Lecture 6, registration part (slides 96–109: the closed-form alignment with known
 pairs, then ICP with guessed pairs; slide 138 summarises the algorithm).
@@ -271,6 +279,8 @@ to fill in its released answer.
 | `notes/06-tutorial.md` | Design plan for the tutorial |
 
 ## Tutorial 7 — Signed Distance Functions (`2026-10-22-sdf_demo.py`)
+
+[![Teaser](assets/mug.gif)](assets/mug.mov)
 
 Companion to Lecture 8, Volumetric Fusion part (slide 173: an SDF and its zero level set;
 slides 178–180: depth maps seen as distances; slides 189–191: marching cubes).
