@@ -20,6 +20,14 @@ fast_differentiable_renderer's image, live, every frame, reloaded when the
 file is saved; D a third time goes back. Either renderer may return uint8 or
 float images, in [0, 1] or [0, 255], gray or RGB, NumPy or PyTorch.
 
+O runs optimize() from differentiable_rendering.py in a separate process
+(loading the file afresh) and adds the mesh it is fitting, "optimized", to the
+meshes: after every step its vertices are sent back, so every view shows the
+mesh as it changes. Its thumbnails are the silhouettes the loss compares, from
+the target cameras: black where the mesh and the target both cover a pixel,
+red where only the mesh does, blue where only the target does. A small plot
+in the big view shows the loss so far. O again stops it; the mesh stays.
+
 Mouse
     left-drag           orbit the camera (azimuth, elevation)
     wheel               move closer / further
@@ -30,6 +38,7 @@ Keys
     M / 1-9         next mesh / mesh by number (the camera stays where it is)
     L               big view lit / as the silhouette from traditional_renderer
     D               big view from differentiable_renderer / fast_differentiable_renderer / back
+    O               run optimize() / stop it
     , / .           lower / higher resolution for the renderer on show
     [ / ]           narrower / wider field of view
     W               wireframe of the projected triangles on top
@@ -57,8 +66,10 @@ sys.path.insert(0, str(HERE))
 os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 if __name__ != '__mp_main__':        # not in differentiable_renderer's process, which imports it itself (diff_worker)
     import pygame  # noqa: E402
+    import torch  # noqa: E402
 
-    from differentiable_rendering import Camera, Image, Object3D, traditional_renderer  # noqa: E402
+    from differentiable_rendering import (Camera, Image, Object3D, load_cameras, load_images,  # noqa: E402
+                                          traditional_renderer)
 
 PAD = 12
 TITLE_H = 32
@@ -99,6 +110,15 @@ DIFF_SIZE = 2                                        # differentiable_renderer s
 FAST_SIZE = len(DIFF_SIZES) - 1                      # fast_differentiable_renderer at the view's 640 x 480
 DIFF_SETTLE_S = 0.3                                  # render once the camera has stood still this long
 RENDERER_FILE = HERE / 'differentiable_rendering.py'
+TARGET_DIR = HERE / 'assets' / 'pylon_target_silhouettes'   # what optimize() fits: images and cameras.npz
+EXTRA, MISSING = (239, 68, 68), (59, 130, 246)       # thumbnails while optimizing: mesh only, target only
+
+
+class Mesh:
+    """The viewer's own copy of a mesh, as NumPy arrays; renderers get it as an Object3D (PyTorch parameters)."""
+
+    def __init__(self, vertices, faces):
+        self.vertices, self.faces = vertices, faces
 
 
 def load_obj(path):
@@ -112,7 +132,7 @@ def load_obj(path):
         elif parts[0] == 'f':
             idx = [int(p.split('/')[0]) - 1 for p in parts[1:]]
             faces += [(idx[0], idx[k], idx[k + 1]) for k in range(1, len(idx) - 1)]
-    return Object3D(np.array(verts), np.array(faces))
+    return Mesh(np.array(verts), np.array(faces))
 
 
 def camera_centre(az, el, dist, target):
@@ -143,7 +163,7 @@ def make_camera(az, el, dist, fov, w, h, target):
 
 
 def silhouette(obj, cam, w, h):
-    return traditional_renderer(obj, cam, Image(w, h))
+    return traditional_renderer(Object3D(obj.vertices, obj.faces), cam, Image(w, h))
 
 
 def shaded(obj, cam, w, h):
@@ -229,6 +249,20 @@ def diff_worker(vertices, faces, K, E, w, h, out):
         out.put(('error', traceback.format_exc(limit=-3), 0.0))
 
 
+def optimize_worker(out):
+    """Run optimize() in its own process, sending the mesh and the loss back after every step."""
+    try:
+        from differentiable_rendering import optimize
+
+        def send(step, obj, loss):
+            out.put(('step', step, obj.vertices.detach().numpy().copy(), obj.faces.numpy().copy(), float(loss)))
+
+        optimize(callback=send)
+        out.put(('done', None))
+    except BaseException:
+        out.put(('error', traceback.format_exc(limit=-3)))
+
+
 def project(obj, cam):
     P = np.hstack([obj.vertices, np.ones((len(obj.vertices), 1))])
     p = (cam.intrinsic_matrix @ (cam.extrinsic_matrix @ P.T)[:3]).T
@@ -253,24 +287,58 @@ class App:
         self.diff_seen, self.diff_since = None, 0.0
         self.fast_module = sys.modules['differentiable_rendering']
         self.fast_mtime, self.fast_error, self.fast_ms = None, None, None
+        self.opt_job, self.opt_k, self.opt_losses = None, None, []   # optimize() in its own process
+        self.opt_status, self.opt_error = None, None   # None, 'starting', 'running', 'done', 'stopped', 'error'
+        self.mesh_version = 0                          # goes up whenever the optimizer moves the mesh
         self.thumb_rects = [pygame.Rect(SBX + (k % TCOLS) * (TW + TGAP),
                                         TITLE_H + 20 + (k // TCOLS) * (TH + TLABEL + TGAP), TW, TH)
                             for k in range(len(VIEWS))]
-        self.meshes = []                     # (name, Object3D, thumbnails), thumbnails made when first shown
+        self.meshes = []                     # (name, Mesh, thumbnails), thumbnails made when first shown
         for path in args.obj:
             self.meshes.append([Path(path).name, load_obj(path), None])
-        self.mesh_rects, x = [], SBX
-        for k, (name, _, _) in enumerate(self.meshes):
-            w = self.small.size(f'{k + 1} {name}')[0] + 16
-            self.mesh_rects.append(pygame.Rect(x, 5, w, 22))
-            x += w + 6
+        self.layout_meshes()
         # frame all the meshes: look at the centre of their bounding box, scale distances to its size
         allv = np.vstack([obj.vertices for _, obj, _ in self.meshes])
         lo, hi = allv.min(axis=0), allv.max(axis=0)
         self.target = (lo + hi) / 2
         self.scale = float(((hi - lo) * (1, 1, VW / VH)).max()) / SCENE_SIZE   # the view is wider than tall
         self.cam_state = self.home()
+        self.targets = self.load_targets()
         self.select_mesh(0)
+
+    def layout_meshes(self):
+        self.mesh_rects, x = [], SBX
+        for k, (name, _, _) in enumerate(self.meshes):
+            w = self.small.size(f'{k + 1} {name}')[0] + 16
+            self.mesh_rects.append(pygame.Rect(x, 5, w, 22))
+            x += w + 6
+
+    def load_targets(self):
+        """optimize()'s target silhouettes and cameras, if they are the thumbnails' views (as with the pylons)."""
+        try:
+            images, cams = load_images(TARGET_DIR), load_cameras(TARGET_DIR / 'cameras.npz')
+        except Exception:
+            return None
+        if len(images) != len(VIEWS) or len(cams) != len(VIEWS):
+            return None
+        for (az, el), cam in zip(VIEWS, cams):
+            thumb = make_camera(az, el, THUMB_DIST * self.scale, THUMB_FOV, TW, TH, self.target)
+            if not np.allclose(thumb.extrinsic_matrix, cam.extrinsic_matrix, atol=1e-6):
+                return None                  # other meshes, framed differently: plain thumbnails
+        return [(image.data[..., 0] < 128, cam, image.width, image.height) for image, cam in zip(images, cams)]
+
+    def compare_thumbs(self, obj):
+        """Thumbnails of obj against the targets, from the target cameras: what the loss compares."""
+        thumbs = []
+        for target, cam, w, h in self.targets:
+            mine = silhouette(obj, cam, w, h).data[..., 0] < 128
+            rgb = np.full((h, w, 3), 255, np.uint8)
+            rgb[mine & target] = 0
+            rgb[mine & ~target] = EXTRA
+            rgb[~mine & target] = MISSING
+            surf = pygame.image.frombuffer(rgb.tobytes(), (w, h), 'RGB')
+            thumbs.append(pygame.transform.smoothscale(surf, (TW, TH)))
+        return thumbs
 
     def home(self):
         return dict(HOME, dist=HOME['dist'] * self.scale)
@@ -279,6 +347,8 @@ class App:
         self.mesh_k = k % len(self.meshes)
         mesh = self.meshes[self.mesh_k]
         self.obj_name, self.obj = mesh[0], mesh[1]
+        if mesh[2] is None and self.mesh_k == self.opt_k and self.targets:
+            mesh[2] = self.compare_thumbs(self.obj)
         if mesh[2] is None:
             mesh[2] = [to_surface(silhouette(self.obj, make_camera(az, el, THUMB_DIST * self.scale, THUMB_FOV,
                                                                    TW, TH, self.target), TW, TH))
@@ -311,7 +381,7 @@ class App:
             mtime = RENDERER_FILE.stat().st_mtime
         except OSError:
             mtime = None
-        return (self.mesh_k, round(s['az'], 3), round(s['el'], 3), round(s['dist'], 3), s['fov'],
+        return (self.mesh_k, self.mesh_version if self.mesh_k == self.opt_k else 0, round(s['az'], 3), round(s['el'], 3), round(s['dist'], 3), s['fov'],
                 self.diff_size, mtime)
 
     def start_diff(self, key):
@@ -365,6 +435,76 @@ class App:
             self.start_diff(key)
         return key
 
+    # ---- optimize(), in its own process -----------------------------------------
+    def start_opt(self):
+        ctx = mp.get_context('spawn')
+        out = ctx.Queue()
+        proc = ctx.Process(target=optimize_worker, args=(out,), daemon=True)
+        proc.start()
+        self.opt_job, self.opt_losses, self.opt_status, self.opt_error = dict(proc=proc, out=out), [], 'starting', None
+
+    def stop_opt(self, status='stopped'):
+        if self.opt_job:
+            self.opt_job['proc'].terminate()
+            self.opt_job['proc'].join(timeout=1)
+            self.opt_job, self.opt_status = None, status
+
+    def update_opt(self):
+        """Take the optimizer's latest mesh (skipping steps the window had no time to show) and its losses."""
+        job, latest = self.opt_job, None
+        if job is None:
+            return
+        while True:
+            try:
+                msg = job['out'].get_nowait()
+            except queue.Empty:
+                break
+            if msg[0] == 'step':
+                self.opt_losses.append(msg[4])
+                latest, self.opt_status = msg, 'running'
+            elif msg[0] == 'done':
+                self.opt_status = 'done'
+            else:
+                self.opt_status, self.opt_error = 'error', msg[1]
+        if latest is not None:
+            mesh = Mesh(latest[2], latest[3])
+            if self.opt_k is None:
+                self.meshes.append(['optimized', mesh, None])
+                self.opt_k = len(self.meshes) - 1
+                self.layout_meshes()
+            self.meshes[self.opt_k][1:] = [mesh, None]
+            self.mesh_version += 1
+            if len(self.opt_losses) == 1 or self.mesh_k == self.opt_k:
+                self.select_mesh(self.opt_k)      # show the mesh being fitted from its first step on
+        if self.opt_status in ('done', 'error'):
+            job['proc'].join(timeout=1)
+            self.opt_job = None
+        elif not job['proc'].is_alive() and job['out'].empty():
+            self.opt_job, self.opt_status = None, 'error'
+            self.opt_error = f'the optimizer process stopped (exit code {job["proc"].exitcode}); see the terminal'
+
+    def draw_opt(self):
+        """The optimizer's progress, bottom right in the big view: status and the loss so far."""
+        if self.opt_status is None:
+            return
+        box = pygame.Rect(VX + VW - 244, VY + VH - 26 - 112, 240, 112)
+        pygame.draw.rect(self.screen, PANE_BG, box)
+        pygame.draw.rect(self.screen, LINE, box, 1)
+        losses = self.opt_losses
+        status = {'starting': 'starting...', 'running': f'step {len(losses)}', 'done': f'done, {len(losses)} steps',
+                  'stopped': f'stopped at step {len(losses)}', 'error': 'failed'}[self.opt_status]
+        self.text(f'optimize(): {status}', (box.x + 6, box.y + 4), self.small, BAD if self.opt_status == 'error' else FG)
+        self.text(f'loss {losses[-1]:.0f}' if losses else '', (box.x + 6, box.y + 20), self.small, MUTED)
+        self.text('O stop' if self.opt_job else 'O run again', (box.right - 80, box.y + 20), self.small, MUTED)
+        plot = pygame.Rect(box.x + 6, box.y + 40, box.w - 12, box.h - 46)
+        pygame.draw.line(self.screen, LINE, plot.bottomleft, plot.bottomright)
+        if len(losses) > 1:
+            top = max(losses)
+            pts = [(plot.x + plot.w * i / (len(losses) - 1), plot.bottom - plot.h * l / top) for i, l in enumerate(losses)]
+            pygame.draw.lines(self.screen, ACCENT, False, pts, 2)
+        if self.opt_status == 'error':
+            self.draw_error(self.opt_error)
+
     # ---- events ---------------------------------------------------------------
     def handle(self, ev):
         if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE):
@@ -384,6 +524,11 @@ class App:
                     self.fast_size = int(np.clip(self.fast_size + step, 0, len(DIFF_SIZES) - 1))
                 else:
                     self.diff_size = int(np.clip(self.diff_size + step, 0, len(DIFF_SIZES) - 1))
+            elif ev.key == pygame.K_o:
+                if self.opt_job:
+                    self.stop_opt()
+                else:
+                    self.start_opt()
             elif ev.key == pygame.K_SPACE:
                 self.spin = not self.spin
             elif ev.key == pygame.K_r:
@@ -446,6 +591,7 @@ class App:
         if cover is not None:
             info += f'   silhouette covers {100 * cover:.1f}% of the image'
         self.text(info, (VX + 8, VY + VH - 22), self.small, MUTED)
+        self.draw_opt()
 
     def draw_diff(self):
         """The big view from differentiable_renderer: the last render, blown up, with what is going on."""
@@ -498,9 +644,10 @@ class App:
                 s = self.cam_state
                 cam = make_camera(s['az'], s['el'], s['dist'], s['fov'], w, h, self.target)
                 try:
-                    image = self.fast_module.Image(w, h)
+                    obj, image = self.fast_module.Object3D(self.obj.vertices, self.obj.faces), self.fast_module.Image(w, h)
                     start = time.perf_counter()
-                    result = fn(self.obj, cam, image)
+                    with torch.no_grad():                    # just looking: no gradients needed
+                        result = fn(obj, cam, image)
                     ms = 1000 * (time.perf_counter() - start)
                     rgb = as_rgb(getattr(result if result is not None else image, 'data', result))
                     if rgb.shape[:2] != (h, w):
@@ -554,8 +701,8 @@ class App:
         for i in range(3):
             self.text('  '.join(f'{v:7.1f}' for v in K[i]), (IX, IY + 44 + 18 * i))
             self.text('  '.join(f'{v:6.3f}' for v in E[i]), (IX + 230, IY + 44 + 18 * i))
-        self.text('drag orbit  wheel distance  [ ] fov  W wire  L lit  D diff  Space spin  R reset  M mesh',
-                  (IX, WIN_H - PAD - 16), self.small, FAINT)
+        self.text('drag orbit  wheel distance  [ ] fov  Space spin  R reset  M mesh', (IX, WIN_H - PAD - 34), self.small, FAINT)
+        self.text('W wire  L lit  D differentiable  O optimize', (IX, WIN_H - PAD - 16), self.small, FAINT)
 
     def draw_meshes(self):
         for k, ((name, _, _), r) in enumerate(zip(self.meshes, self.mesh_rects)):
@@ -572,6 +719,12 @@ class App:
 
     def draw_thumbs(self):
         self.text('Views (click to open)', (SBX, TITLE_H), self.bold)
+        if self.mesh_k == self.opt_k and self.targets:
+            x = SBX + SBW
+            for label, col in (('target only', MISSING), ('mesh only', EXTRA), ('both', FG)):
+                x -= self.small.size(label)[0] + 22
+                pygame.draw.rect(self.screen, col, (x, TITLE_H + 3, 10, 10))
+                self.text(label, (x + 14, TITLE_H + 1), self.small, MUTED)
         current = self.nearest_view()
         for k, ((az, el), surf, r) in enumerate(zip(VIEWS, self.thumbs, self.thumb_rects)):
             self.screen.blit(surf, r.topleft)
@@ -609,6 +762,7 @@ class App:
         self.text('front', (cx - 18, rect.y + 4), self.small, FAINT)
 
     def draw(self):
+        self.update_opt()
         self.screen.fill(BG)
         self.text('Tutorial 9: silhouettes from traditional_renderer', (PAD, 8), self.bold)
         self.draw_meshes()
@@ -630,6 +784,7 @@ class App:
                 self.cam_state['az'] = (self.cam_state['az'] + SPIN_DEG_PER_S * dt) % 360
             self.draw()
         self.stop_diff()
+        self.stop_opt()
         pygame.quit()
 
 
