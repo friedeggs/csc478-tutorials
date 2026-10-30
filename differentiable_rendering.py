@@ -236,6 +236,68 @@ def fast_differentiable_renderer_pytorch(obj: Object3D, camera: Camera, image: I
 
     return image
 
+def batched_differentiable_renderer_pytorch(obj: Object3D, camera: Camera, image: Image, budget=1_000_000):
+    """fast_differentiable_renderer_pytorch, with the triangles done in batches: the same image, faster.
+
+    Looping over the triangles one at a time in PyTorch costs about the same for every triangle,
+    however few pixels it covers, which is slow for a mesh of thousands of small triangles. Here the
+    triangles are sorted by the size of their box of pixels and done many at a time: each batch pads
+    its boxes to the largest one (at most budget numbers per batch), finds all their barycentric
+    coordinates at once, and adds them into the image with one index_add.
+    """
+
+    # Project the triangles to image space, as before
+    pts_3d = obj.vertices.double()  # (N, 3)
+    K = torch.as_tensor(camera.intrinsic_matrix, dtype=torch.float64)
+    E = torch.as_tensor(camera.extrinsic_matrix, dtype=torch.float64)
+    pts_hom = torch.cat((pts_3d, torch.ones(pts_3d.shape[0], 1, dtype=torch.float64)), dim=1)  # Convert to homogeneous coordinates
+    pts_cam = (E @ pts_hom.T).T  # Transform to camera coordinates
+    pts_img = (K @ pts_cam[:, :3].T).T  # Project to image plane
+    pts_img = pts_img / pts_img[:, 2:3]
+
+    tri_img = pts_img[obj.faces][:, :, :2]  # (M, 3, 2) tensor of triangle vertices in image space
+    A = torch.cat((tri_img.transpose(1, 2), torch.ones(len(tri_img), 1, 3, dtype=torch.float64)), dim=1)
+    A_inv, info = torch.linalg.inv_ex(A)  # Barycentric coordinates of pixel (i, j) are A_inv @ (j, i, 1)
+
+    # Every triangle's box of pixels: the triangle doubled about its centroid, as before
+    H, W = image.height, image.width
+    tri_np = tri_img.detach().numpy()
+    centroid = tri_np.mean(axis=1, keepdims=True)
+    big = centroid + 2 * (tri_np - centroid)
+    j0, i0 = np.maximum(np.ceil(big.min(axis=1)), 0).astype(int).T
+    j1, i1 = np.minimum(np.floor(big.max(axis=1)), (W - 1, H - 1)).astype(int).T
+    h, w = i1 - i0 + 1, j1 - j0 + 1
+    keep = np.nonzero((info.numpy() == 0) & (h > 0) & (w > 0))[0]  # Skip degenerate triangles and those off the image
+    keep = keep[np.argsort(h[keep] * w[keep], kind='stable')]  # Small boxes together, so padding wastes little
+
+    inside = torch.zeros(H * W, dtype=torch.float64)  # How many triangles each pixel is inside
+    soft_sum = torch.zeros(H * W, dtype=torch.float64)  # Sum of the soft contributions
+    start = 0
+    while start < len(keep):
+        end = start + 1  # Grow the batch while its padded boxes fit the budget
+        while end < len(keep) and (end + 1 - start) * h[keep[end]] * w[keep[end]] <= budget:
+            end += 1
+        t = keep[start:end]
+        ii = i0[t, None, None] + np.arange(h[t].max())[None, :, None]  # (B, bh, 1) pixel rows
+        jj = j0[t, None, None] + np.arange(w[t].max())[None, None, :]  # (B, 1, bw) pixel columns
+        in_box = torch.as_tensor((ii <= i1[t, None, None]) & (jj <= j1[t, None, None]))  # (B, bh, bw), not padding
+        pixels = torch.as_tensor(np.minimum(ii, H - 1) * W + np.minimum(jj, W - 1))[in_box]  # Flat pixel indices
+
+        M = A_inv[t]  # (B, 3, 3)
+        jt, it = torch.as_tensor(jj, dtype=torch.float64), torch.as_tensor(ii, dtype=torch.float64)
+        bary_coords = M[:, :, 0, None, None] * jt[:, None] + M[:, :, 1, None, None] * it[:, None] + M[:, :, 2, None, None]  # (B, 3, bh, bw)
+        tri_inside = torch.all(bary_coords >= 0, dim=1)
+        soft = torch.clamp(1 - torch.sqrt(torch.sum(bary_coords ** 2, dim=1)), 0, 1)
+
+        inside = inside.index_add(0, pixels, tri_inside[in_box].double())
+        soft_sum = soft_sum.index_add(0, pixels, torch.where(tri_inside, 0, soft)[in_box])
+        start = end
+
+    gray = torch.where(inside > 0, 0, torch.clamp(255 - 255 * soft_sum, min=0)).reshape(H, W)
+    image.data = gray[:, :, None].repeat(1, 1, 3).float()  # White background, black silhouette
+
+    return image
+
 def neighbour_average(faces, n):
     """(n, n) matrix whose row v averages the vertices joined to vertex v by an edge."""
     edges = torch.cat((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
@@ -244,24 +306,64 @@ def neighbour_average(faces, n):
     W[edges[:, 1], edges[:, 0]] = 1
     return W / W.sum(dim=1, keepdim=True)
 
-def optimize(steps=200, smoothness=1e5, callback=None):
-    """Fit a plain cone's vertices to the complex pylon's silhouettes, and return the fitted Object3D.
+def rotate_quarter_turn(points):
+    """Rotate (N, 3) points 90 degrees about the z axis: the pylon's square base and 8-sided cone look the same."""
+    return torch.stack((-points[:, 1], points[:, 0], points[:, 2]), dim=1)
 
-    The silhouettes only say where the outline is, so a smoothness term keeps the surface between
-    them from crumpling: each vertex should move about as much as its neighbours do on average.
+def mirror_side_to_side(points):
+    """Reflect (N, 3) points in the plane y = 0: the car's left and right (x forward, y left, z up)."""
+    return points * torch.tensor([1.0, -1.0, 1.0])
+
+def symmetry_partners(vertices, symmetry):
+    """For each vertex, the index of the vertex nearest to its image under symmetry (a function of points)."""
+    with torch.no_grad():
+        return torch.cdist(symmetry(vertices), vertices).argmin(dim=1)
+
+# What to fit: the starting mesh, the target silhouettes and their cameras, the symmetry the result
+# should have, and the settings that work for it (tuned on these meshes; the car is about 6 times the
+# pylon's size, so it moves further per step and its terms in square metres need other weights). The
+# pylon keeps its sharp edges (no Laplacian term); the high-poly car is rounded, so the car's
+# Laplacian term pulls its surface smooth.
+PROBLEMS = {
+    'pylon': dict(init='pylon_init.obj', targets='pylon_target_silhouettes', symmetry=rotate_quarter_turn,
+                  lr=3e-3, smoothness=1e5, laplacian=0, symmetric=3e5),
+    'car': dict(init='car_init.obj', targets='car_target_silhouettes', symmetry=mirror_side_to_side,
+                lr=1e-2, smoothness=0, laplacian=1e6, symmetric=3e6),
+}
+
+def optimize(problem='pylon', steps=200, lr=None, smoothness=None, laplacian=None, symmetric=None, callback=None):
+    """Fit a starting mesh's vertices to a target's silhouettes, and return the fitted Object3D.
+
+    problem is a key of PROBLEMS: 'pylon' (a plain cone to the complex pylon) or 'car' (the low-poly
+    car, split to as many vertices as the high-poly car, to the high-poly car). lr, smoothness,
+    laplacian and symmetric override the problem's settings.
+
+    The silhouettes only say where the outline is, so more terms keep the surface between them in
+    shape: smoothness (each vertex should move about as much as its neighbours do on average, which
+    keeps the starting mesh's edges), the Laplacian (each vertex should sit at its neighbours'
+    average, which smooths edges away) and symmetry (each vertex, turned or reflected by the
+    problem's symmetry, should land on its partner, the vertex that was there at the start).
 
     If callback is given, callback(step, obj, loss) is called after every step (the viewer uses it to
     show the mesh as it changes).
     """
+    settings = PROBLEMS[problem]
+    lr = settings['lr'] if lr is None else lr
+    smoothness = settings['smoothness'] if smoothness is None else smoothness
+    laplacian = settings['laplacian'] if laplacian is None else laplacian
+    symmetric = settings['symmetric'] if symmetric is None else symmetric
+
     # Load initial mesh, and the target silhouettes it should match, with their cameras
-    init = load_obj(ASSETS / 'pylon_init.obj')  # Object3D with optimizable vertices, more of them at the base and middle
-    imgs = load_images(ASSETS / 'pylon_target_silhouettes')  # List of Image objects
-    cams = load_cameras(ASSETS / 'pylon_target_silhouettes' / 'cameras.npz')  # List of Camera objects
+    init = load_obj(ASSETS / settings['init'])  # Object3D with optimizable vertices
+    imgs = load_images(ASSETS / settings['targets'])  # List of Image objects
+    cams = load_cameras(ASSETS / settings['targets'] / 'cameras.npz')  # List of Camera objects
 
     start = init.vertices.detach().clone()  # Where the vertices start, to measure how far they move
     neighbours = neighbour_average(init.faces, len(init.vertices))
+    symmetry = settings['symmetry']
+    partners = symmetry_partners(start, symmetry)
 
-    optimizer = torch.optim.Adam(init.parameters(), lr=3e-3)
+    optimizer = torch.optim.Adam(init.parameters(), lr=lr)
 
     for i in tqdm(range(steps), desc="Optimizing"):
         optimizer.zero_grad()  # Clear the gradients from the last step
@@ -269,13 +371,19 @@ def optimize(steps=200, smoothness=1e5, callback=None):
         # For each target silhouette, render the current mesh and compute a loss
         total_loss = 0.0
         for img, cam in zip(imgs, cams):
-            rendered = fast_differentiable_renderer_pytorch(init, cam, Image(img.width, img.height))  # A fresh image, not the target
+            rendered = batched_differentiable_renderer_pytorch(init, cam, Image(img.width, img.height))  # A fresh image, not the target
             loss = torch.mean((rendered.data.float() - torch.as_tensor(img.data, dtype=torch.float32)) ** 2)
             total_loss += loss
 
         # Smoothness: how different each vertex's move is from its neighbours' average move
         moved = init.vertices - start
         total_loss += smoothness * torch.mean(torch.sum((moved - neighbours @ moved) ** 2, dim=1))
+
+        # Laplacian: how far each vertex is from its neighbours' average
+        total_loss += laplacian * torch.mean(torch.sum((init.vertices - neighbours @ init.vertices) ** 2, dim=1))
+
+        # Symmetry: how far each vertex's image under the symmetry is from its partner
+        total_loss += symmetric * torch.mean(torch.sum((symmetry(init.vertices) - init.vertices[partners]) ** 2, dim=1))
 
         # Backpropagate and update the mesh vertices
         total_loss.backward()

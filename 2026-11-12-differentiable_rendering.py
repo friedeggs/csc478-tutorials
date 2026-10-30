@@ -1,7 +1,6 @@
 """Silhouette viewer for Tutorial 9 (2026-11-12, differentiable rendering).
 
-Renders silhouettes of meshes in assets/ (by default the pylons,
-pylon_simple.obj, pylon_init.obj and pylon_complex.obj; the cars with --obj) with
+Renders silhouettes of meshes in assets/ with
 traditional_renderer from differentiable_rendering.py: project the vertices
 with K [R | t], then fill every triangle. The big view is the camera you steer,
 lit (a key light from above and a headlight on the camera, flat shaded, back
@@ -9,6 +8,10 @@ faces culled, a z-buffer) or as the silhouette; the sidebar shows the
 silhouettes from 16 fixed views (8 azimuths at two elevations) and a map of
 where the cameras stand, seen from above. The camera looks at the centre of
 the meshes' bounding box, from distances scaled to its size.
+
+There are two scenes, and C switches between them: the pylons (pylon_simple.obj,
+pylon_init.obj and pylon_complex.obj) and the cars (car.obj, car_init.obj and
+car_highpoly.obj). Each keeps its own camera and mesh on show.
 
 D shows differentiable_renderer's image instead, made at a lower resolution
 (K scaled to match) and blown up. It runs in a separate process, which loads
@@ -20,9 +23,9 @@ fast_differentiable_renderer's image, live, every frame, reloaded when the
 file is saved; D a third time goes back. Either renderer may return uint8 or
 float images, in [0, 1] or [0, 255], gray or RGB, NumPy or PyTorch.
 
-O runs optimize() from differentiable_rendering.py in a separate process
-(loading the file afresh) and adds the mesh it is fitting, "optimized", to the
-meshes: after every step its vertices are sent back, so every view shows the
+O runs optimize() from differentiable_rendering.py for the scene on show
+(optimize('pylon') or optimize('car')) in a separate process (loading the file
+afresh) and adds the mesh it is fitting, "optimized", to the scene's meshes: after every step its vertices are sent back, so every view shows the
 mesh as it changes. Its thumbnails are the silhouettes the loss compares, from
 the target cameras and by the targets' rule (a pixel is in if the mesh covers
 at least half of it): black where the mesh and the target both cover a pixel,
@@ -38,9 +41,10 @@ Mouse
 
 Keys
     M / 1-9         next mesh / mesh by number (the camera stays where it is)
+    C               pylons / cars
     L               big view lit / as the silhouette from traditional_renderer
     D               big view from differentiable_renderer / fast_differentiable_renderer / back
-    O               run optimize() / stop it
+    O               run optimize() for the scene on show / stop it
     , / .           lower / higher resolution for the renderer on show
     [ / ]           narrower / wider field of view
     W               wireframe of the projected triangles on top
@@ -48,7 +52,7 @@ Keys
     R               reset the camera
     Esc             quit
 
-Run:  python 2026-11-12-differentiable_rendering.py [--obj assets/car.obj assets/car_highpoly.obj ...]
+Run:  python 2026-11-12-differentiable_rendering.py [--scene car] [--obj other.obj ...]
 """
 import argparse
 import importlib
@@ -70,8 +74,8 @@ if __name__ != '__mp_main__':        # not in differentiable_renderer's process,
     import pygame  # noqa: E402
     import torch  # noqa: E402
 
-    from differentiable_rendering import (Camera, Image, Object3D, load_cameras, load_images,  # noqa: E402
-                                          traditional_renderer)
+    from differentiable_rendering import (PROBLEMS, Camera, Image, Object3D, load_cameras,  # noqa: E402
+                                          load_images, traditional_renderer)
 
 PAD = 12
 TITLE_H = 32
@@ -112,9 +116,13 @@ DIFF_SIZE = 2                                        # differentiable_renderer s
 FAST_SIZE = len(DIFF_SIZES) - 1                      # fast_differentiable_renderer at the view's 640 x 480
 DIFF_SETTLE_S = 0.3                                  # render once the camera has stood still this long
 RENDERER_FILE = HERE / 'differentiable_rendering.py'
-TARGET_DIR = HERE / 'assets' / 'pylon_target_silhouettes'   # what optimize() fits: images and cameras.npz
+SCENES = {                                           # meshes shown (and framed) together, by optimize() problem
+    'pylon': ['pylon_simple.obj', 'pylon_init.obj', 'pylon_complex.obj'],
+    'car': ['car.obj', 'car_init.obj', 'car_highpoly.obj'],
+}
 EXTRA, MISSING = (239, 68, 68), (59, 130, 246)       # thumbnails while optimizing: mesh only, target only
 COVER_SAMPLES = 8                                    # per pixel, each way, as for the targets (notes/09-make-assets.py)
+COMPARE_EVERY_S = 0.5                                # compare the optimized mesh with the targets at most this often
 
 
 class Mesh:
@@ -259,18 +267,50 @@ def diff_worker(vertices, faces, K, E, w, h, out):
         out.put(('error', traceback.format_exc(limit=-3), 0.0))
 
 
-def optimize_worker(out):
-    """Run optimize() in its own process, sending the mesh and the loss back after every step."""
+def optimize_worker(problem, out):
+    """Run optimize(problem) in its own process, sending the mesh and the loss back after every step."""
     try:
         from differentiable_rendering import optimize
 
         def send(step, obj, loss):
             out.put(('step', step, obj.vertices.detach().numpy().copy(), obj.faces.numpy().copy(), float(loss)))
 
-        optimize(callback=send)
+        optimize(problem, callback=send)
         out.put(('done', None))
     except BaseException:
         out.put(('error', traceback.format_exc(limit=-3)))
+
+
+def load_targets(problem, target, scale):
+    """optimize(problem)'s target silhouettes and cameras, if they are the thumbnails' views when framed so."""
+    try:
+        folder = HERE / 'assets' / PROBLEMS[problem]['targets']
+        images, cams = load_images(folder), load_cameras(folder / 'cameras.npz')
+    except Exception:
+        return None
+    if len(images) != len(VIEWS) or len(cams) != len(VIEWS):
+        return None
+    for (az, el), cam in zip(VIEWS, cams):
+        thumb = make_camera(az, el, THUMB_DIST * scale, THUMB_FOV, TW, TH, target)
+        if not np.allclose(thumb.extrinsic_matrix, cam.extrinsic_matrix, atol=1e-6):
+            return None                      # other meshes, framed differently: plain thumbnails
+    return [(image.data[..., 0] < 128, cam, image.width, image.height) for image, cam in zip(images, cams)]
+
+
+class Scene:
+    """Meshes shown together, framed by their bounding box, with the optimize() problem that goes with them."""
+
+    def __init__(self, name, paths, problem):
+        self.name, self.problem = name, problem
+        self.meshes = [[Path(path).name, load_obj(path), None] for path in paths]   # (name, Mesh, thumbnails)
+        # frame all the meshes: look at the centre of their bounding box, scale distances to its size
+        allv = np.vstack([obj.vertices for _, obj, _ in self.meshes])
+        lo, hi = allv.min(axis=0), allv.max(axis=0)
+        self.target = (lo + hi) / 2
+        self.scale = float(((hi - lo) * (1, 1, VW / VH)).max()) / SCENE_SIZE   # the view is wider than tall
+        self.cam_state = dict(HOME, dist=HOME['dist'] * self.scale)
+        self.mesh_k, self.opt_k = 0, None    # the mesh on show, the optimized mesh (once there is one)
+        self.targets = load_targets(problem, self.target, self.scale) if problem in PROBLEMS else None
 
 
 def project(obj, cam):
@@ -297,25 +337,37 @@ class App:
         self.diff_seen, self.diff_since = None, 0.0
         self.fast_module = sys.modules['differentiable_rendering']
         self.fast_mtime, self.fast_error, self.fast_ms = None, None, None
-        self.opt_job, self.opt_k, self.opt_losses = None, None, []   # optimize() in its own process
+        self.opt_job, self.opt_losses, self.opt_problem = None, [], None   # optimize() in its own process
         self.opt_status, self.opt_error = None, None   # None, 'starting', 'running', 'done', 'stopped', 'error'
         self.opt_iou = None                            # mean IoU of the optimized mesh's thumbnails
+        self.opt_scene, self.opt_stale, self.opt_compared = None, False, 0.0   # its scene; are its thumbnails out of
+                                                                              # date; when they were last made
         self.mesh_version = 0                          # goes up whenever the optimizer moves the mesh
         self.thumb_rects = [pygame.Rect(SBX + (k % TCOLS) * (TW + TGAP),
                                         TITLE_H + 20 + (k // TCOLS) * (TH + TLABEL + TGAP), TW, TH)
                             for k in range(len(VIEWS))]
-        self.meshes = []                     # (name, Mesh, thumbnails), thumbnails made when first shown
-        for path in args.obj:
-            self.meshes.append([Path(path).name, load_obj(path), None])
+        self.scenes = {}                     # by name, made when first shown
+        self.scene_paths = {name: [HERE / 'assets' / n for n in names] for name, names in SCENES.items()}
+        if args.obj:
+            self.scene_paths = {'custom': args.obj, **self.scene_paths}
+        self.switch_scene('custom' if args.obj else args.scene)
+
+    # the scene on show holds the meshes, the framing, the targets and the camera
+    meshes = property(lambda self: self.scene.meshes)
+    target = property(lambda self: self.scene.target)
+    scale = property(lambda self: self.scene.scale)
+    targets = property(lambda self: self.scene.targets)
+    opt_k = property(lambda self: self.scene.opt_k)
+    mesh_k = property(lambda self: self.scene.mesh_k, lambda self, k: setattr(self.scene, 'mesh_k', k))
+    cam_state = property(lambda self: self.scene.cam_state, lambda self, s: setattr(self.scene, 'cam_state', s))
+
+    def switch_scene(self, name):
+        if name not in self.scenes:
+            self.scenes[name] = Scene(name, self.scene_paths[name], name)
+        self.scene = self.scenes[name]
+        self.stop_diff()
         self.layout_meshes()
-        # frame all the meshes: look at the centre of their bounding box, scale distances to its size
-        allv = np.vstack([obj.vertices for _, obj, _ in self.meshes])
-        lo, hi = allv.min(axis=0), allv.max(axis=0)
-        self.target = (lo + hi) / 2
-        self.scale = float(((hi - lo) * (1, 1, VW / VH)).max()) / SCENE_SIZE   # the view is wider than tall
-        self.cam_state = self.home()
-        self.targets = self.load_targets()
-        self.select_mesh(0)
+        self.select_mesh(self.mesh_k)
 
     def layout_meshes(self):
         self.mesh_rects, x = [], SBX
@@ -324,24 +376,10 @@ class App:
             self.mesh_rects.append(pygame.Rect(x, 5, w, 22))
             x += w + 6
 
-    def load_targets(self):
-        """optimize()'s target silhouettes and cameras, if they are the thumbnails' views (as with the pylons)."""
-        try:
-            images, cams = load_images(TARGET_DIR), load_cameras(TARGET_DIR / 'cameras.npz')
-        except Exception:
-            return None
-        if len(images) != len(VIEWS) or len(cams) != len(VIEWS):
-            return None
-        for (az, el), cam in zip(VIEWS, cams):
-            thumb = make_camera(az, el, THUMB_DIST * self.scale, THUMB_FOV, TW, TH, self.target)
-            if not np.allclose(thumb.extrinsic_matrix, cam.extrinsic_matrix, atol=1e-6):
-                return None                  # other meshes, framed differently: plain thumbnails
-        return [(image.data[..., 0] < 128, cam, image.width, image.height) for image, cam in zip(images, cams)]
-
-    def compare_thumbs(self, obj):
-        """Thumbnails of obj against the targets, from the target cameras (what the loss compares), and their mean IoU."""
+    def compare_thumbs(self, obj, targets):
+        """Thumbnails of obj against targets, from the target cameras (what the loss compares), and their mean IoU."""
         thumbs, ious = [], []
-        for target, cam, w, h in self.targets:
+        for target, cam, w, h in targets:
             mine = covered(obj, cam, w, h)
             ious.append((mine & target).sum() / max((mine | target).sum(), 1))
             rgb = np.full((h, w, 3), 255, np.uint8)
@@ -391,7 +429,7 @@ class App:
             mtime = RENDERER_FILE.stat().st_mtime
         except OSError:
             mtime = None
-        return (self.mesh_k, self.mesh_version if self.mesh_k == self.opt_k else 0, round(s['az'], 3), round(s['el'], 3), round(s['dist'], 3), s['fov'],
+        return ((self.scene.name, self.mesh_k), self.mesh_version if self.mesh_k == self.opt_k else 0, round(s['az'], 3), round(s['el'], 3), round(s['dist'], 3), s['fov'],
                 self.diff_size, mtime)
 
     def start_diff(self, key):
@@ -447,18 +485,34 @@ class App:
 
     # ---- optimize(), in its own process -----------------------------------------
     def start_opt(self):
+        self.opt_problem, self.opt_losses, self.opt_iou = self.scene.problem, [], None
+        if self.scene.problem not in PROBLEMS:
+            self.opt_status, self.opt_error = 'error', 'optimize() has no problem for these meshes; C shows the pylons or the cars'
+            return
         ctx = mp.get_context('spawn')
         out = ctx.Queue()
-        proc = ctx.Process(target=optimize_worker, args=(out,), daemon=True)
+        proc = ctx.Process(target=optimize_worker, args=(self.scene.problem, out), daemon=True)
         proc.start()
-        self.opt_job, self.opt_losses, self.opt_status, self.opt_error = dict(proc=proc, out=out), [], 'starting', None
-        self.opt_iou = None
+        self.opt_job, self.opt_scene = dict(proc=proc, out=out, scene=self.scene), self.scene
+        self.opt_status, self.opt_error = 'starting', None
 
     def stop_opt(self, status='stopped'):
         if self.opt_job:
             self.opt_job['proc'].terminate()
             self.opt_job['proc'].join(timeout=1)
             self.opt_job, self.opt_status = None, status
+        self.compare_opt(now=True)
+
+    def compare_opt(self, now=False):
+        """Remake the optimized mesh's thumbnails against the targets, if they are out of date and it is time."""
+        scene = self.opt_scene
+        if not self.opt_stale or (not now and time.monotonic() - self.opt_compared < COMPARE_EVERY_S):
+            return
+        mesh = scene.meshes[scene.opt_k]
+        mesh[2], self.opt_iou = self.compare_thumbs(mesh[1], scene.targets)
+        self.opt_stale, self.opt_compared = False, time.monotonic()
+        if scene is self.scene and self.mesh_k == scene.opt_k:
+            self.thumbs = mesh[2]
 
     def update_opt(self):
         """Take the optimizer's latest mesh (skipping steps the window had no time to show) and its losses."""
@@ -478,24 +532,32 @@ class App:
             else:
                 self.opt_status, self.opt_error = 'error', msg[1]
         if latest is not None:
-            mesh = Mesh(latest[2], latest[3])
-            if self.opt_k is None:
-                self.meshes.append(['optimized', mesh, None])
-                self.opt_k = len(self.meshes) - 1
-                self.layout_meshes()
-            thumbs = None
-            if self.targets:
-                thumbs, self.opt_iou = self.compare_thumbs(mesh)
-            self.meshes[self.opt_k][1:] = [mesh, thumbs]
+            scene, mesh = job['scene'], Mesh(latest[2], latest[3])
+            if scene.opt_k is None:
+                scene.meshes.append(['optimized', mesh, None])
+                scene.opt_k = len(scene.meshes) - 1
+                if scene is self.scene:
+                    self.layout_meshes()
+            entry = scene.meshes[scene.opt_k]
+            entry[1] = mesh
+            if scene.targets:
+                self.opt_stale = True                 # the thumbnails catch up in compare_opt
+                if entry[2] is None or len(self.opt_losses) == 1:
+                    self.compare_opt(now=True)
+            else:
+                entry[2] = None                       # plain thumbnails, made when shown
             self.mesh_version += 1
-            if len(self.opt_losses) == 1 or self.mesh_k == self.opt_k:
-                self.select_mesh(self.opt_k)      # show the mesh being fitted from its first step on
+            if len(self.opt_losses) == 1:
+                scene.mesh_k = scene.opt_k        # show the mesh being fitted from its first step on
+            if scene is self.scene and self.mesh_k == self.opt_k:
+                self.select_mesh(self.opt_k)
         if self.opt_status in ('done', 'error'):
             job['proc'].join(timeout=1)
             self.opt_job = None
         elif not job['proc'].is_alive() and job['out'].empty():
             self.opt_job, self.opt_status = None, 'error'
             self.opt_error = f'the optimizer process stopped (exit code {job["proc"].exitcode}); see the terminal'
+        self.compare_opt(now=self.opt_job is None)   # the last mesh is compared at once
 
     def draw_opt(self):
         """The optimizer's progress, bottom right in the big view: status and the loss so far."""
@@ -507,7 +569,8 @@ class App:
         losses = self.opt_losses
         status = {'starting': 'starting...', 'running': f'step {len(losses)}', 'done': f'done, {len(losses)} steps',
                   'stopped': f'stopped at step {len(losses)}', 'error': 'failed'}[self.opt_status]
-        self.text(f'optimize(): {status}', (box.x + 6, box.y + 4), self.small, BAD if self.opt_status == 'error' else FG)
+        self.text(f"optimize('{self.opt_problem}'): {status}", (box.x + 6, box.y + 4), self.small,
+                  BAD if self.opt_status == 'error' else FG)
         self.text((f'loss {losses[-1]:.0f}' if losses else '') + (f'  IoU {self.opt_iou:.3f}' if self.opt_iou else ''),
                   (box.x + 6, box.y + 20), self.small, MUTED)
         self.text('O stop' if self.opt_job else 'O run again', (box.right - 80, box.y + 20), self.small, MUTED)
@@ -539,6 +602,9 @@ class App:
                     self.fast_size = int(np.clip(self.fast_size + step, 0, len(DIFF_SIZES) - 1))
                 else:
                     self.diff_size = int(np.clip(self.diff_size + step, 0, len(DIFF_SIZES) - 1))
+            elif ev.key == pygame.K_c:
+                names = list(self.scene_paths)
+                self.switch_scene(names[(names.index(self.scene.name) + 1) % len(names)])
             elif ev.key == pygame.K_o:
                 if self.opt_job:
                     self.stop_opt()
@@ -614,7 +680,7 @@ class App:
         w, h = DIFF_SIZES[self.diff_size]
         self.screen.fill(VIEW_BG, (VX, VY, VW, VH))
         res, err, job = self.diff_result, self.diff_error, self.diff_job
-        shown = res if res and res['key'][0] == self.mesh_k else None
+        shown = res if res and res['key'][0] == (self.scene.name, self.mesh_k) else None
         if shown:
             self.screen.blit(pygame.transform.scale(shown['surf'], (VW, VH)), (VX, VY))
         if job:
@@ -716,7 +782,8 @@ class App:
         for i in range(3):
             self.text('  '.join(f'{v:7.1f}' for v in K[i]), (IX, IY + 44 + 18 * i))
             self.text('  '.join(f'{v:6.3f}' for v in E[i]), (IX + 230, IY + 44 + 18 * i))
-        self.text('drag orbit  wheel distance  [ ] fov  Space spin  R reset  M mesh', (IX, WIN_H - PAD - 34), self.small, FAINT)
+        self.text('drag orbit  wheel distance  [ ] fov  Space spin  R reset  M mesh  C pylons/cars', (IX, WIN_H - PAD - 34),
+                  self.small, FAINT)
         self.text('W wire  L lit  D differentiable  O optimize', (IX, WIN_H - PAD - 16), self.small, FAINT)
 
     def draw_meshes(self):
@@ -805,8 +872,8 @@ class App:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--obj', nargs='+', default=[str(HERE / 'assets' / n) for n in ('pylon_simple.obj', 'pylon_init.obj', 'pylon_complex.obj')],
-                    help='meshes to switch between')
+    ap.add_argument('--scene', choices=list(SCENES), default='pylon', help='the scene to start with')
+    ap.add_argument('--obj', nargs='+', help='other meshes to show, as a scene of their own')
     App(ap.parse_args()).run()
 
 
