@@ -42,6 +42,8 @@ Notes:
 
 ## Tutorial 3 — Image Formation and Homographies (`2026-09-24-image_formation.py`)
 
+*Perspective warp a poster by adjusting a homography matrix.*
+
 [![Teaser](assets/warp.gif)](assets/warp.mov)
 
 Companion to Lecture 3 (slides 17–24: 2D transformations, homography estimation; slides 36–40:
@@ -96,6 +98,8 @@ The answer is released: `2026-09-24-image_formation.py` imports `compute_homogra
 | `assets/CS478_Poster_Warped.png`, `assets/CS478_Poster_Warped_corners.txt` | The angled poster photo and its corners (TL, TR, BR, BL) |
 
 ## Tutorial 4 — HoG Object Detection (`2026-10-01-hog_demo.py`)
+
+*Play "I spy" with MNIST digits using classic histogram of oriented gradients image features.*
 
 [![Teaser](assets/hog.gif)](assets/hog.mov)
 
@@ -163,6 +167,8 @@ replace it. `python 2026-10-01-hog_demo.py --no-answers` ignores released answer
 
 ## Tutorial 5 — The Kalman Filter (`2026-10-08-kalman_demo.py`)
 
+*Track the moving car (even as GPS is lost inside the tunnel) by filling in the Kalman filter algorithm.*
+
 [![Teaser](assets/ring_road.gif)](assets/ring_road.mov)
 
 Companion to Lecture 5, tracking part (slides 101–112: hidden state, the Bayes filter's predict /
@@ -217,6 +223,8 @@ to fill in its released answer.
 | `notes/05-tutorial.md` | Design plan for the tutorial |
 
 ## Tutorial 6 — Iterative Closest Point (`2026-10-15-icp_demo.py`)
+
+*Align the source and target bunny point clouds by matching fridge magnets to fill in the Iterative Closest Point algorithm.*
 
 [![Teaser](assets/bunny.gif)](assets/bunny.mov)
 
@@ -279,6 +287,8 @@ to fill in its released answer.
 | `notes/06-tutorial.md` | Design plan for the tutorial |
 
 ## Tutorial 7 — Signed Distance Functions (`2026-10-22-sdf_demo.py`)
+
+*Reconstruct the coffee mug from depth maps and extract the mesh by drawing the cases of the Marching Cubes algorithm.*
 
 [![Teaser](assets/mug.gif)](assets/mug.mov)
 
