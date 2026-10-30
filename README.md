@@ -224,7 +224,7 @@ to fill in its released answer.
 
 ## Tutorial 6 — Iterative Closest Point (`2026-10-15-icp_demo.py`)
 
-*Align the source and target bunny point clouds by matching fridge magnets to fill in the Iterative Closest Point algorithm.*
+*Align the source and target bunny point clouds by matching "fridge magnets" to fill in the Iterative Closest Point algorithm.*
 
 [![Teaser](assets/bunny.gif)](assets/bunny.mov)
 
