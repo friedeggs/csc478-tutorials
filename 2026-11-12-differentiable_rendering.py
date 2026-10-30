@@ -1,7 +1,7 @@
 """Silhouette viewer for Tutorial 9 (2026-11-12, differentiable rendering).
 
 Renders silhouettes of meshes in assets/ (by default the pylons,
-pylon_simple.obj and pylon_complex.obj; the cars with --obj) with
+pylon_simple.obj, pylon_init.obj and pylon_complex.obj; the cars with --obj) with
 traditional_renderer from differentiable_rendering.py: project the vertices
 with K [R | t], then fill every triangle. The big view is the camera you steer,
 lit (a key light from above and a headlight on the camera, flat shaded, back
@@ -24,9 +24,11 @@ O runs optimize() from differentiable_rendering.py in a separate process
 (loading the file afresh) and adds the mesh it is fitting, "optimized", to the
 meshes: after every step its vertices are sent back, so every view shows the
 mesh as it changes. Its thumbnails are the silhouettes the loss compares, from
-the target cameras: black where the mesh and the target both cover a pixel,
+the target cameras and by the targets' rule (a pixel is in if the mesh covers
+at least half of it): black where the mesh and the target both cover a pixel,
 red where only the mesh does, blue where only the target does. A small plot
-in the big view shows the loss so far. O again stops it; the mesh stays.
+in the big view shows the loss so far and the mean IoU of the 16 thumbnails.
+O again stops it; the mesh stays.
 
 Mouse
     left-drag           orbit the camera (azimuth, elevation)
@@ -112,6 +114,7 @@ DIFF_SETTLE_S = 0.3                                  # render once the camera ha
 RENDERER_FILE = HERE / 'differentiable_rendering.py'
 TARGET_DIR = HERE / 'assets' / 'pylon_target_silhouettes'   # what optimize() fits: images and cameras.npz
 EXTRA, MISSING = (239, 68, 68), (59, 130, 246)       # thumbnails while optimizing: mesh only, target only
+COVER_SAMPLES = 8                                    # per pixel, each way, as for the targets (notes/09-make-assets.py)
 
 
 class Mesh:
@@ -164,6 +167,13 @@ def make_camera(az, el, dist, fov, w, h, target):
 
 def silhouette(obj, cam, w, h):
     return traditional_renderer(Object3D(obj.vertices, obj.faces), cam, Image(w, h))
+
+
+def covered(obj, cam, w, h, n=COVER_SAMPLES):
+    """Pixels the mesh covers at least half of: traditional_renderer at n x n samples per pixel, averaged."""
+    K = cam.intrinsic_matrix * [[n], [n], [1]] + [[0, 0, (n - 1) / 2], [0, 0, (n - 1) / 2], [0, 0, 0]]
+    big = silhouette(obj, Camera(K, cam.extrinsic_matrix), w * n, h * n).data[..., 0] < 128
+    return big.reshape(h, n, w, n).mean(axis=(1, 3)) >= 0.5
 
 
 def shaded(obj, cam, w, h):
@@ -289,6 +299,7 @@ class App:
         self.fast_mtime, self.fast_error, self.fast_ms = None, None, None
         self.opt_job, self.opt_k, self.opt_losses = None, None, []   # optimize() in its own process
         self.opt_status, self.opt_error = None, None   # None, 'starting', 'running', 'done', 'stopped', 'error'
+        self.opt_iou = None                            # mean IoU of the optimized mesh's thumbnails
         self.mesh_version = 0                          # goes up whenever the optimizer moves the mesh
         self.thumb_rects = [pygame.Rect(SBX + (k % TCOLS) * (TW + TGAP),
                                         TITLE_H + 20 + (k // TCOLS) * (TH + TLABEL + TGAP), TW, TH)
@@ -309,7 +320,7 @@ class App:
     def layout_meshes(self):
         self.mesh_rects, x = [], SBX
         for k, (name, _, _) in enumerate(self.meshes):
-            w = self.small.size(f'{k + 1} {name}')[0] + 16
+            w = self.small.size(f'{k + 1} {name.removesuffix(".obj")}')[0] + 16
             self.mesh_rects.append(pygame.Rect(x, 5, w, 22))
             x += w + 6
 
@@ -328,17 +339,18 @@ class App:
         return [(image.data[..., 0] < 128, cam, image.width, image.height) for image, cam in zip(images, cams)]
 
     def compare_thumbs(self, obj):
-        """Thumbnails of obj against the targets, from the target cameras: what the loss compares."""
-        thumbs = []
+        """Thumbnails of obj against the targets, from the target cameras (what the loss compares), and their mean IoU."""
+        thumbs, ious = [], []
         for target, cam, w, h in self.targets:
-            mine = silhouette(obj, cam, w, h).data[..., 0] < 128
+            mine = covered(obj, cam, w, h)
+            ious.append((mine & target).sum() / max((mine | target).sum(), 1))
             rgb = np.full((h, w, 3), 255, np.uint8)
             rgb[mine & target] = 0
             rgb[mine & ~target] = EXTRA
             rgb[~mine & target] = MISSING
             surf = pygame.image.frombuffer(rgb.tobytes(), (w, h), 'RGB')
             thumbs.append(pygame.transform.smoothscale(surf, (TW, TH)))
-        return thumbs
+        return thumbs, float(np.mean(ious))
 
     def home(self):
         return dict(HOME, dist=HOME['dist'] * self.scale)
@@ -347,8 +359,6 @@ class App:
         self.mesh_k = k % len(self.meshes)
         mesh = self.meshes[self.mesh_k]
         self.obj_name, self.obj = mesh[0], mesh[1]
-        if mesh[2] is None and self.mesh_k == self.opt_k and self.targets:
-            mesh[2] = self.compare_thumbs(self.obj)
         if mesh[2] is None:
             mesh[2] = [to_surface(silhouette(self.obj, make_camera(az, el, THUMB_DIST * self.scale, THUMB_FOV,
                                                                    TW, TH, self.target), TW, TH))
@@ -442,6 +452,7 @@ class App:
         proc = ctx.Process(target=optimize_worker, args=(out,), daemon=True)
         proc.start()
         self.opt_job, self.opt_losses, self.opt_status, self.opt_error = dict(proc=proc, out=out), [], 'starting', None
+        self.opt_iou = None
 
     def stop_opt(self, status='stopped'):
         if self.opt_job:
@@ -472,7 +483,10 @@ class App:
                 self.meshes.append(['optimized', mesh, None])
                 self.opt_k = len(self.meshes) - 1
                 self.layout_meshes()
-            self.meshes[self.opt_k][1:] = [mesh, None]
+            thumbs = None
+            if self.targets:
+                thumbs, self.opt_iou = self.compare_thumbs(mesh)
+            self.meshes[self.opt_k][1:] = [mesh, thumbs]
             self.mesh_version += 1
             if len(self.opt_losses) == 1 or self.mesh_k == self.opt_k:
                 self.select_mesh(self.opt_k)      # show the mesh being fitted from its first step on
@@ -487,14 +501,15 @@ class App:
         """The optimizer's progress, bottom right in the big view: status and the loss so far."""
         if self.opt_status is None:
             return
-        box = pygame.Rect(VX + VW - 244, VY + VH - 26 - 112, 240, 112)
+        box = pygame.Rect(VX + VW - 284, VY + VH - 26 - 112, 280, 112)
         pygame.draw.rect(self.screen, PANE_BG, box)
         pygame.draw.rect(self.screen, LINE, box, 1)
         losses = self.opt_losses
         status = {'starting': 'starting...', 'running': f'step {len(losses)}', 'done': f'done, {len(losses)} steps',
                   'stopped': f'stopped at step {len(losses)}', 'error': 'failed'}[self.opt_status]
         self.text(f'optimize(): {status}', (box.x + 6, box.y + 4), self.small, BAD if self.opt_status == 'error' else FG)
-        self.text(f'loss {losses[-1]:.0f}' if losses else '', (box.x + 6, box.y + 20), self.small, MUTED)
+        self.text((f'loss {losses[-1]:.0f}' if losses else '') + (f'  IoU {self.opt_iou:.3f}' if self.opt_iou else ''),
+                  (box.x + 6, box.y + 20), self.small, MUTED)
         self.text('O stop' if self.opt_job else 'O run again', (box.right - 80, box.y + 20), self.small, MUTED)
         plot = pygame.Rect(box.x + 6, box.y + 40, box.w - 12, box.h - 46)
         pygame.draw.line(self.screen, LINE, plot.bottomleft, plot.bottomright)
@@ -709,7 +724,7 @@ class App:
             on = k == self.mesh_k
             pygame.draw.rect(self.screen, ACCENT if on else PANE_BG, r, border_radius=4)
             pygame.draw.rect(self.screen, ACCENT if on else LINE, r, 1, border_radius=4)
-            self.text(f'{k + 1} {name}', (r.x + 8, r.y + 4), self.small, PANE_BG if on else FG)
+            self.text(f'{k + 1} {name.removesuffix(".obj")}', (r.x + 8, r.y + 4), self.small, PANE_BG if on else FG)
 
     def nearest_view(self):
         s = self.cam_state
@@ -790,7 +805,7 @@ class App:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--obj', nargs='+', default=[str(HERE / 'assets' / n) for n in ('pylon_simple.obj', 'pylon_complex.obj')],
+    ap.add_argument('--obj', nargs='+', default=[str(HERE / 'assets' / n) for n in ('pylon_simple.obj', 'pylon_init.obj', 'pylon_complex.obj')],
                     help='meshes to switch between')
     App(ap.parse_args()).run()
 

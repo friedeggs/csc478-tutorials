@@ -236,18 +236,32 @@ def fast_differentiable_renderer_pytorch(obj: Object3D, camera: Camera, image: I
 
     return image
 
-def optimize(steps=100, callback=None):
-    """Fit the simple pylon's vertices to the complex pylon's silhouettes, and return the fitted Object3D.
+def neighbour_average(faces, n):
+    """(n, n) matrix whose row v averages the vertices joined to vertex v by an edge."""
+    edges = torch.cat((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
+    W = torch.zeros(n, n)
+    W[edges[:, 0], edges[:, 1]] = 1
+    W[edges[:, 1], edges[:, 0]] = 1
+    return W / W.sum(dim=1, keepdim=True)
+
+def optimize(steps=200, smoothness=1e5, callback=None):
+    """Fit a plain cone's vertices to the complex pylon's silhouettes, and return the fitted Object3D.
+
+    The silhouettes only say where the outline is, so a smoothness term keeps the surface between
+    them from crumpling: each vertex should move about as much as its neighbours do on average.
 
     If callback is given, callback(step, obj, loss) is called after every step (the viewer uses it to
     show the mesh as it changes).
     """
     # Load initial mesh, and the target silhouettes it should match, with their cameras
-    init = load_obj(ASSETS / 'pylon_simple.obj')  # Object3D with optimizable vertices
+    init = load_obj(ASSETS / 'pylon_init.obj')  # Object3D with optimizable vertices, more of them at the base and middle
     imgs = load_images(ASSETS / 'pylon_target_silhouettes')  # List of Image objects
     cams = load_cameras(ASSETS / 'pylon_target_silhouettes' / 'cameras.npz')  # List of Camera objects
 
-    optimizer = torch.optim.Adam(init.parameters(), lr=1e-3)
+    start = init.vertices.detach().clone()  # Where the vertices start, to measure how far they move
+    neighbours = neighbour_average(init.faces, len(init.vertices))
+
+    optimizer = torch.optim.Adam(init.parameters(), lr=3e-3)
 
     for i in tqdm(range(steps), desc="Optimizing"):
         optimizer.zero_grad()  # Clear the gradients from the last step
@@ -258,6 +272,10 @@ def optimize(steps=100, callback=None):
             rendered = fast_differentiable_renderer_pytorch(init, cam, Image(img.width, img.height))  # A fresh image, not the target
             loss = torch.mean((rendered.data.float() - torch.as_tensor(img.data, dtype=torch.float32)) ** 2)
             total_loss += loss
+
+        # Smoothness: how different each vertex's move is from its neighbours' average move
+        moved = init.vertices - start
+        total_loss += smoothness * torch.mean(torch.sum((moved - neighbours @ moved) ** 2, dim=1))
 
         # Backpropagate and update the mesh vertices
         total_loss.backward()
