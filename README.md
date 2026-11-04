@@ -350,3 +350,58 @@ they are still TODOs (their chips say so); in tabs 2 and 4, hover a row or open 
 | `sdf_lib.py` | Given code: cameras and depth maps, the pose-and-scale wrapper, sphere tracing, CSG magnets, the mug, marching cubes and its checks |
 | `assets/mug.obj` | The mug to fit (23 k triangles, cm), made by `notes/07-make-assets.py` |
 | `notes/07-tutorial.md` | Design plan for the tutorial |
+
+## Tutorial 8 — Inertial Measurement Units (`2026-11-05-imu_demo.py`)
+
+*Track a VR headset with a simulated gyro and accelerometer, the way the Oculus Rift did, by building each filter line from "fridge magnets".*
+
+Companion to Lecture 7, IMU part (slides 10–17: gyro model and dead reckoning; slides 21–33: the
+accelerometer and orientation tracking in Flatland; slides 34–47: tilt in 3D and magnetometers), with
+tricks from LaValle et al., *Head Tracking for the Oculus Rift*, ICRA 2014: integrating in the head's
+frame, tilt correction about a horizontal axis, rejecting shakes, yaw from the magnetometer, and
+predicting over the latency. The simulated IMU runs at 1000 Hz, like the Rift's.
+
+### Run
+
+Same setup as above (this tutorial needs numpy, pygame and matplotlib), then:
+
+```bash
+python 2026-11-05-imu_demo.py
+```
+
+### What to do
+
+Everything happens in the window; there is no code to write. Each stage has a card on the right:
+**Goal**, **Do**, **See**, **Think**. Drag magnets from the palette into the empty slot to build the
+stage's line. Under the line the demo says what is missing, when the units do not match, or what a
+line that runs but is wrong does. A right line turns green and opens the next stage (**Next →**).
+
+| Stage | Tab | You build | Slides | What you see |
+|---|---|---|---|---|
+| M0 | 1 Flatland | nothing: tilt and shake the head yourself (**H**) | 4–9, 21 | the gyro dial and the accelerometer arrow |
+| M1 | 1 | the gyro update `θ ← …` | 10–17, 28 | the blue needle drifts; bias (**B**), noise (**N**), calibration (**K**) |
+| M2 | 1 | the angle from gravity `atan2( , )` | 21–25, 29–30 | the orange needle: no drift, noisy, fooled by shakes |
+| M3 | 1 | the complementary filter `θ ← …` | 31–33 | the red needle; the **α** slider and its time constant τ; reject shakes (**S**) |
+| M4 | 2 Rift | the 3D gyro update `R ← …` | 11, 28 | the headset and what the eye sees; the order matters once you look down |
+| M5 | 2 | the angle of the tilt correction | 26, 34–41, 46–47 | the horizon levels, the yaw still drifts; magnetometer (**M**), a magnet (**G**) |
+| M6 | 2 | the rotation vector for prediction | (paper §VII) | the room lags without it; latency slider (**L**); your errors next to the paper's |
+
+The grey head (tab 1) and the grey ghost (tab 2) are the truth. The recorded head plays a one-minute
+motion on a loop; **H** lets you be the head instead: drag in the view to tilt it (tab 1) or drag in
+the eye view to turn it (tab 2), right-drag to shake it. **P** (tab 2) tries to get the position by
+integrating the accelerometer twice.
+
+Keys: **1 / 2** tabs · **Space** pause · **.** fast-forward ×10 · **R** restart · **H** your head ·
+**B / N** bias / noise · **K** calibrate · **[ ]** α · **S** reject shakes · **M / G** magnetometer /
+magnet · **L / Shift+L** latency · **O** prediction on / off · **P** position · **C** reset the 3D camera
+· **A** released answer · **Backspace / Delete** remove the last magnet / the whole line · **Esc** quit.
+
+Answers are released during the tutorial. After `git pull`, open the stage and press **A**.
+
+### Files
+
+| Path | What |
+|---|---|
+| `2026-11-05-imu_demo.py` | The demo (pygame) |
+| `imu_lib.py` | Given code: rotations, the recorded and live head motions, the simulated IMU, the magnet parser and its unit checks, the given parts of the filters |
+| `notes/08-tutorial.md` | Design plan for the tutorial |
